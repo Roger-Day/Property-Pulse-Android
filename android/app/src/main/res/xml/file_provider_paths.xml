@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider paths — required by image_picker to share image URIs
+    with the camera / gallery without exposing raw file:// URIs.
+-->
+<paths>
+    <external-path  name="external_files"  path="." />
+    <cache-path     name="cache_files"     path="." />
+    <external-cache-path name="external_cache" path="." />
+    <files-path     name="internal_files"  path="." />
+</paths>

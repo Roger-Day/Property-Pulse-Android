@@ -1,0 +1,11 @@
+# Copy this file to key.properties and fill in your actual values.
+# key.properties is listed in .gitignore and must NEVER be committed.
+#
+# Generate a keystore with:
+#   keytool -genkey -v -keystore property_pulse.jks \
+#           -alias property_pulse -keyalg RSA -keysize 2048 -validity 10000
+#
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=property_pulse
+storeFile=../key/property_pulse.jks
