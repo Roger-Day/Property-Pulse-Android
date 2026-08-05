@@ -12,9 +12,9 @@ import '../../models/host_booking_row.dart';
 import '../../models/property_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../repositories/property_repository.dart';
-import '../../repositories/user_profile_repository.dart';
 import '../../services/guest_stays_privacy_store.dart';
 import '../../services/stripe_service.dart';
+import '../host/cancellation_flow_screen.dart';
 
 /// Guest stay details — parity with iOS [GuestStayDetailView].
 class GuestStayDetailScreen extends StatefulWidget {
@@ -102,13 +102,6 @@ class _GuestStayDetailScreenState extends State<GuestStayDetailScreen> {
     } catch (_) {
       return '$code ${amt.toStringAsFixed(2)}';
     }
-  }
-
-  String _dateRange(HostBookingRow row) {
-    if (!row.hasDates) return 'Dates TBD';
-    final a = _mediumFmt.format(row.checkIn!);
-    final b = _mediumFmt.format(row.checkOut!);
-    return '$a – $b';
   }
 
   Future<void> _messageHost(BuildContext context) async {
@@ -201,48 +194,23 @@ class _GuestStayDetailScreenState extends State<GuestStayDetailScreen> {
     }
   }
 
-  Future<void> _confirmCancel(BuildContext context) async {
-    final profileRepo = context.read<UserProfileRepository>();
-    final messenger = ScaffoldMessenger.of(context);
-
-    final ok = await showDialog<bool>(
+  Future<void> _openCancelFlow(BuildContext context) async {
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Cancel reservation?'),
-        content: Text(
-          'Your stay at ${_live.headline} (${_dateRange(_live)}) will be cancelled. '
-          'You can message the host if you need to change plans instead.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Keep reservation'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: AppColors.error,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Cancel reservation'),
-          ),
-        ],
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => CancellationFlowScreen(
+        bookingId: _live.id,
+        propertyTitle: _live.headline,
+        totalPrice: _live.totalAmount ?? 0,
+        checkIn: _live.checkIn,
+        cancellationPolicyId: _live.cancellationPolicyId,
+        role: 'guest',
+        onDismiss: () => Navigator.of(context).maybePop(),
       ),
     );
-    if (ok != true || !mounted) return;
-
-    try {
-      await profileRepo.cancelGuestBooking(_live);
-      if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Reservation cancelled')),
-      );
-      if (!context.mounted) return;
-      context.pop(true);
-    } catch (e) {
-      if (!mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text('Could not cancel: $e')));
-    }
+    // The booking-detail listener (`_listenBooking`) picks up the status
+    // change in real time, so no manual refresh is needed here.
   }
 
   Future<void> _confirmRemoveFromMyStays(BuildContext context) async {
@@ -496,7 +464,7 @@ class _GuestStayDetailScreenState extends State<GuestStayDetailScreen> {
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.error,
                   ),
-                  onPressed: () => _confirmCancel(context),
+                  onPressed: () => _openCancelFlow(context),
                   child: const Text('Cancel reservation'),
                 ),
               ),

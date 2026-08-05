@@ -9,6 +9,7 @@ import '../../constants/app_colors.dart';
 import '../../models/project_model.dart';
 import '../../models/property_model.dart';
 import '../../models/public_profile_summary.dart';
+import '../../models/realtor_trust_indicators.dart';
 import '../../repositories/project_repository.dart';
 import '../../repositories/user_profile_repository.dart';
 import '../../utils/responsive.dart';
@@ -39,12 +40,16 @@ class _PublicProfileExtras {
 
 class _PublicProfileScreenState extends State<PublicProfileScreen> {
   Future<_PublicProfileExtras>? _extrasFuture;
+  Future<RealtorTrustIndicators?>? _trustFuture;
 
   @override
   void didUpdateWidget(covariant PublicProfileScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.userId != widget.userId) {
-      setState(() => _extrasFuture = null);
+      setState(() {
+        _extrasFuture = null;
+        _trustFuture = null;
+      });
     }
   }
 
@@ -142,6 +147,10 @@ class _PublicProfileScreenState extends State<PublicProfileScreen> {
 
     _extrasFuture ??= _loadExtras(p);
     final bio = p.bio?.trim() ?? '';
+    if (p.isVerified) {
+      _trustFuture ??=
+          context.read<UserProfileRepository>().fetchRealtorTrustIndicators(p.userId);
+    }
 
     return ListView(
       padding: Responsive.hPadding(context, top: 16, bottom: 32),
@@ -149,6 +158,17 @@ class _PublicProfileScreenState extends State<PublicProfileScreen> {
         _PublicProfileHeader(p: p),
         const SizedBox(height: 16),
         _PublicProfileStatsBar(userId: p.userId),
+        if (p.isVerified) ...[
+          const SizedBox(height: 16),
+          FutureBuilder<RealtorTrustIndicators?>(
+            future: _trustFuture,
+            builder: (context, trustSnap) {
+              final t = trustSnap.data;
+              if (t == null) return const SizedBox.shrink();
+              return _TrustIndicatorsSection(indicators: t);
+            },
+          ),
+        ],
         if (bio.isNotEmpty) ...[
           const SizedBox(height: 16),
           _AboutSection(bio: bio),
@@ -273,6 +293,128 @@ class _PublicProfileHeader extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trust Indicators — Verified Realtor Rewards, Part 6. Only rendered when
+// `p.isVerified` and the `getRealtorTrustIndicators` callable resolves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TrustIndicatorsSection extends StatelessWidget {
+  const _TrustIndicatorsSection({required this.indicators});
+
+  final RealtorTrustIndicators indicators;
+
+  String _formatDate(DateTime d) => DateFormat.yMMMd().format(d);
+
+  String _formatResponseTime(int? minutes) {
+    if (minutes == null) return '—';
+    if (minutes < 60) return '$minutes min';
+    final hours = minutes ~/ 60;
+    final rem = minutes % 60;
+    return rem == 0 ? '$hours hr' : '$hours hr $rem min';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = indicators;
+    final tiles = <_TrustStat>[
+      _TrustStat(Icons.verified, 'Verified Realtor',
+          t.verificationStatus == 'verified' ? 'Active' : '—'),
+      if (t.verifiedRealtorSince != null)
+        _TrustStat(Icons.event_available_outlined, 'Verified Since',
+            _formatDate(t.verifiedRealtorSince!)),
+      if (t.yearsOnPlatform != null)
+        _TrustStat(Icons.cake_outlined, 'Years on Property Pulse',
+            '${t.yearsOnPlatform}'),
+      _TrustStat(Icons.home_work_outlined, 'Active Listings',
+          '${t.activeListingsCount}'),
+      _TrustStat(
+        Icons.star_rate_rounded,
+        'Average Rating',
+        t.averageRating != null ? t.averageRating!.toStringAsFixed(1) : '—',
+      ),
+      _TrustStat(Icons.rate_review_outlined, 'Total Reviews', '${t.totalReviews}'),
+      _TrustStat(
+        Icons.forum_outlined,
+        'Response Rate',
+        t.responseRatePercent != null ? '${t.responseRatePercent}%' : '—',
+      ),
+      _TrustStat(Icons.schedule_outlined, 'Avg. Response Time',
+          _formatResponseTime(t.averageResponseTimeMinutes)),
+    ];
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(ProfileTokens.radiusCard),
+        boxShadow: ProfileShadows.card(),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shield_outlined,
+                  size: 18, color: AppColors.verifiedBadge),
+              const SizedBox(width: 8),
+              Text(
+                'Trust & Reputation',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 12,
+            runSpacing: 14,
+            children: [
+              for (final tile in tiles)
+                SizedBox(width: (MediaQuery.of(context).size.width - 64) / 2, child: tile),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TrustStat extends StatelessWidget {
+  const _TrustStat(this.icon, this.label, this.value);
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: AppColors.textSecondary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+              ),
+              Text(
+                label,
+                style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -881,17 +1023,39 @@ class _PublicProfileStatsBar extends StatelessWidget {
 
   Future<_ProfileStats> _load() async {
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection('reviews')
-          .where('realtorId', isEqualTo: userId)
-          .get();
-      if (snap.docs.isEmpty) return const _ProfileStats();
-      final ratings =
-          snap.docs.map((d) => (d.data()['rating'] as num?)?.toInt() ?? 0);
-      final avg = ratings.reduce((a, b) => a + b) / snap.docs.length;
+      // `reviews` docs carry `propertyId`, not a `realtorId`/`ownerId` field
+      // (see ReviewModel) — there's no direct query for "this lister's
+      // reviews". Instead, aggregate the pre-computed `averageRating`/
+      // `totalReviews` already denormalized onto each of the lister's own
+      // property docs, the same fields iOS reads for a single property
+      // (`Property.averageRating`/`totalReviews`) rather than live-querying
+      // `reviews`.
+      final col = FirebaseFirestore.instance.collection('properties');
+      final results = await Future.wait([
+        col.where('realtorId', isEqualTo: userId).get(),
+        col.where('ownerId', isEqualTo: userId).get(),
+      ]);
+      final docs = <String, Map<String, dynamic>>{};
+      for (final snap in results) {
+        for (final d in snap.docs) {
+          docs[d.id] = d.data();
+        }
+      }
+      if (docs.isEmpty) return const _ProfileStats();
+
+      var ratingSum = 0.0;
+      var reviewCount = 0;
+      for (final data in docs.values) {
+        final avg = (data['averageRating'] as num?)?.toDouble();
+        final total = (data['totalReviews'] as num?)?.toInt() ?? 0;
+        if (avg == null || total <= 0) continue;
+        ratingSum += avg * total;
+        reviewCount += total;
+      }
+      if (reviewCount == 0) return const _ProfileStats();
       return _ProfileStats(
-        averageRating: avg,
-        totalReviews: snap.docs.length,
+        averageRating: ratingSum / reviewCount,
+        totalReviews: reviewCount,
       );
     } catch (_) {
       return const _ProfileStats();

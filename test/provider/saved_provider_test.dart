@@ -250,6 +250,24 @@ void main() {
     });
   });
 
+  group('SavedProvider — clearAll', () {
+    test('removes every saved id', () async {
+      repo.emitSaved({'p1', 'p2', 'p3'});
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.clearAll();
+      expect(provider.savedIds, isEmpty);
+    });
+
+    test('is a no-op when nothing is saved', () async {
+      repo.emitSaved({});
+      await Future<void>.delayed(Duration.zero);
+
+      await provider.clearAll();
+      expect(provider.savedIds, isEmpty);
+    });
+  });
+
   group('SavedProvider — notifyListeners', () {
     test('emits change notification on toggle', () async {
       repo.emitSaved({});

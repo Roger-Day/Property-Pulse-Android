@@ -1,6 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// Review categories — mirrors iOS `ReviewCategory`.
+/// Review categories — mirrors iOS `ReviewCategory` for the 5 categories
+/// both platforms' UI actually collects (overall/location/value/
+/// cleanliness/communication). iOS additionally has condition/amenities/
+/// neighborhood/accessibility/safety with no Flutter rating UI for them
+/// (a real but larger deferred gap — adding them means adding rating rows
+/// to the write-a-review form, not just this model); Flutter's `accuracy`
+/// has no iOS counterpart. [label] is also the exact Firestore rawValue
+/// string iOS reads/writes — using `.name` (lowercase) here previously
+/// made every rating silently invisible cross-platform.
 enum ReviewCategory {
   overall,
   location,
@@ -27,23 +35,35 @@ enum ReviewCategory {
   }
 }
 
-/// Review types — mirrors iOS `ReviewType`.
+/// Review types — mirrors iOS `ReviewType` exactly (general/stay/visit/
+/// purchase/rental describe the kind of interaction the review follows).
+/// Previously this enum had unrelated buyer/renter/investor cases invented
+/// independently of iOS, so a `reviewType` written by either platform was
+/// silently unrecognized by the other (both default to `.general` on an
+/// unmatched value, so no crash — just a lost category, which is exactly
+/// the "silently invisible" class of bug already found in `categoryRatings`
+/// below).
 enum ReviewType {
   general,
-  buyer,
-  renter,
-  investor;
+  stay,
+  visit,
+  purchase,
+  rental;
 
+  /// Also iOS's exact Firestore rawValue string for this case — see
+  /// [ReviewModel.toFirestore].
   String get label {
     switch (this) {
       case ReviewType.general:
         return 'General';
-      case ReviewType.buyer:
-        return 'Buyer';
-      case ReviewType.renter:
-        return 'Renter';
-      case ReviewType.investor:
-        return 'Investor';
+      case ReviewType.stay:
+        return 'Stay';
+      case ReviewType.visit:
+        return 'Visit';
+      case ReviewType.purchase:
+        return 'Purchase';
+      case ReviewType.rental:
+        return 'Rental';
     }
   }
 }
@@ -96,25 +116,24 @@ class ReviewModel {
     }
 
     ReviewType parseType(dynamic value) {
-      switch ((value as String? ?? '').toLowerCase()) {
-        case 'buyer':
-          return ReviewType.buyer;
-        case 'renter':
-          return ReviewType.renter;
-        case 'investor':
-          return ReviewType.investor;
-        default:
-          return ReviewType.general;
+      // Case-insensitive so both iOS's capitalized rawValues ("Stay") and
+      // Flutter's own enum-name writes ("stay") parse correctly.
+      final v = (value as String? ?? '').toLowerCase();
+      for (final t in ReviewType.values) {
+        if (t.name == v) return t;
       }
+      return ReviewType.general;
     }
 
     Map<ReviewCategory, int> parseCategoryRatings(dynamic value) {
       if (value is! Map) return {};
       final out = <ReviewCategory, int>{};
       for (final entry in value.entries) {
-        final key = entry.key as String? ?? '';
+        final key = (entry.key as String? ?? '').toLowerCase();
         final val = (entry.value as num?)?.toInt() ?? 0;
         for (final cat in ReviewCategory.values) {
+          // Matches both iOS's capitalized rawValue ("Cleanliness") and
+          // Flutter's pre-fix lowercase writes ("cleanliness").
           if (cat.name == key) {
             out[cat] = val;
             break;
@@ -142,9 +161,12 @@ class ReviewModel {
   }
 
   Map<String, dynamic> toFirestore() {
+    // Write iOS's exact capitalized rawValue strings (`label`, not `.name`)
+    // so a review written on Android is actually readable on iOS — see the
+    // doc comments on ReviewType/ReviewCategory above.
     final catMap = <String, int>{};
     for (final entry in categoryRatings.entries) {
-      catMap[entry.key.name] = entry.value;
+      catMap[entry.key.label] = entry.value;
     }
     return {
       'propertyId': propertyId,
@@ -157,7 +179,7 @@ class ReviewModel {
       'date': Timestamp.fromDate(date),
       'helpfulCount': helpfulCount,
       'isVerified': isVerified,
-      'reviewType': reviewType.name,
+      'reviewType': reviewType.label,
       'categoryRatings': catMap,
     };
   }

@@ -368,6 +368,7 @@ class _PropertyPickerSheetState extends State<_PropertyPickerSheet> {
                 const Spacer(),
                 IconButton(
                   icon: const Icon(Icons.close),
+                  tooltip: 'Close',
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],
@@ -481,6 +482,7 @@ class _SelectedPropertyTile extends StatelessWidget {
           if (onClear != null)
             IconButton(
               icon: const Icon(Icons.close, size: 18),
+              tooltip: 'Clear selected property',
               onPressed: onClear,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),

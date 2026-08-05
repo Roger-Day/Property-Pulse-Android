@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../constants/app_constants.dart';
 import '../models/property_model.dart';
+import '../services/search/location_search_service.dart';
+import '../services/search/search_relevance.dart';
 import '../utils/location_match.dart';
 
 /// Filter parameters used by [PropertyRepository.watchFilteredListings].
@@ -15,6 +17,7 @@ class PropertyFilter {
     this.minBathrooms = 0,
     this.minPrice,
     this.maxPrice,
+    this.currencyCode,
     this.propertyType,
     this.listingType,
     this.status,
@@ -32,8 +35,12 @@ class PropertyFilter {
     this.hasBalcony = false,
     this.petFriendly = false,
     this.furnished = false,
+    this.verifiedRealtorsOnly = false,
     this.dateFrom,
     this.dateTo,
+    this.nearLatitude,
+    this.nearLongitude,
+    this.radiusKm,
   });
 
   final String query;
@@ -45,6 +52,18 @@ class PropertyFilter {
 
   /// Maximum price inclusive (null = no cap).
   final double? maxPrice;
+
+  /// When set, [minPrice]/[maxPrice] only bound listings whose own
+  /// [PropertyModel.currencyCode] matches (case-insensitive) — added for AI
+  /// natural-language search (`AiSearchService`), which can parse an
+  /// explicit currency out of a query (e.g. "under JMD 30 million"). Null
+  /// (the default, and what every manual filter-sheet search still passes)
+  /// preserves the exact prior behavior: a raw numeric price comparison
+  /// with no currency awareness. Without this, a price bound extracted from
+  /// one currency could silently compare against listings priced in a
+  /// different one — PropertyModel has a currencyCode field already;
+  /// nothing before this compared it during search.
+  final String? currencyCode;
 
   final String? propertyType;
   final String? listingType;
@@ -69,11 +88,31 @@ class PropertyFilter {
   final bool hasBalcony;
   final bool petFriendly;
   final bool furnished;
+
+  /// Verified Realtor Rewards, Part 3 — "Verified Realtors Only" filter.
+  /// Matches on [PropertyModel.isListerVerified], the already-denormalized
+  /// `realtorVerificationStatus` field (kept in sync by
+  /// functions/user-public-sync-functions.js's backfillPropertyVerification
+  /// — no new backend plumbing needed for this filter).
+  final bool verifiedRealtorsOnly;
   final DateTime? dateFrom;
   final DateTime? dateTo;
 
+  /// Geospatial search readiness (Phase 2.5) — set all three together via
+  /// [LocationSearchService] (a resolved landmark, or a geocoded address)
+  /// to narrow results to a radius. Null by default and untouched by every
+  /// existing caller (filter sheet, quick chips, AI search's Phase 2
+  /// schema, which has no location-radius field) — this is unused
+  /// infrastructure today, deliberately: it exists so a future AI query
+  /// like "near UWI" has a query-execution path to plug straight into,
+  /// without another PropertyFilter/watchFilteredListings change.
+  final double? nearLatitude;
+  final double? nearLongitude;
+  final double? radiusKm;
+
   /// Sort order — mirrors iOS SearchViewModel sort options.
-  /// Values: 'price_asc', 'price_desc', 'date_newest', 'date_oldest', 'sqft_desc'
+  /// Values: 'price_asc', 'price_desc', 'date_newest', 'date_oldest',
+  /// 'sqft_desc', 'relevance' (Phase 2.5 — see watchFilteredListings).
   final String? sortBy;
 
   bool get isEmpty =>
@@ -82,6 +121,7 @@ class PropertyFilter {
       minBathrooms == 0 &&
       minPrice == null &&
       maxPrice == null &&
+      currencyCode == null &&
       propertyType == null &&
       listingType == null &&
       status == null &&
@@ -99,8 +139,10 @@ class PropertyFilter {
       !hasBalcony &&
       !petFriendly &&
       !furnished &&
+      !verifiedRealtorsOnly &&
       dateFrom == null &&
-      dateTo == null;
+      dateTo == null &&
+      radiusKm == null;
 
   PropertyFilter copyWith({
     String? query,
@@ -109,6 +151,7 @@ class PropertyFilter {
     int? minBathrooms,
     double? minPrice,
     double? maxPrice,
+    String? currencyCode,
     String? propertyType,
     String? listingType,
     String? status,
@@ -126,14 +169,20 @@ class PropertyFilter {
     bool? hasBalcony,
     bool? petFriendly,
     bool? furnished,
+    bool? verifiedRealtorsOnly,
     DateTime? dateFrom,
     DateTime? dateTo,
+    double? nearLatitude,
+    double? nearLongitude,
+    double? radiusKm,
     bool clearMinPrice = false,
     bool clearMaxPrice = false,
+    bool clearCurrencyCode = false,
     bool clearType = false,
     bool clearListingType = false,
     bool clearStatus = false,
     bool clearDates = false,
+    bool clearNearLocation = false,
   }) {
     return PropertyFilter(
       query: query ?? this.query,
@@ -141,6 +190,8 @@ class PropertyFilter {
       minBathrooms: minBathrooms ?? this.minBathrooms,
       minPrice: clearMinPrice ? null : (minPrice ?? this.minPrice),
       maxPrice: clearMaxPrice ? null : (maxPrice ?? this.maxPrice),
+      currencyCode:
+          clearCurrencyCode ? null : (currencyCode ?? this.currencyCode),
       propertyType: clearType ? null : (propertyType ?? this.propertyType),
       listingType: clearListingType ? null : (listingType ?? this.listingType),
       status: clearStatus ? null : (status ?? this.status),
@@ -158,8 +209,14 @@ class PropertyFilter {
       hasBalcony: hasBalcony ?? this.hasBalcony,
       petFriendly: petFriendly ?? this.petFriendly,
       furnished: furnished ?? this.furnished,
+      verifiedRealtorsOnly: verifiedRealtorsOnly ?? this.verifiedRealtorsOnly,
       dateFrom: clearDates ? null : (dateFrom ?? this.dateFrom),
       dateTo: clearDates ? null : (dateTo ?? this.dateTo),
+      nearLatitude:
+          clearNearLocation ? null : (nearLatitude ?? this.nearLatitude),
+      nearLongitude:
+          clearNearLocation ? null : (nearLongitude ?? this.nearLongitude),
+      radiusKm: clearNearLocation ? null : (radiusKm ?? this.radiusKm),
       sortBy: sortBy ?? this.sortBy,
     );
   }
@@ -203,7 +260,8 @@ class PropertyRepository {
   }
 
   /// @nodoc Kept for older call sites — same as [watchHomePropertyPool].
-  Stream<List<PropertyModel>> watchFeaturedListings() => watchHomePropertyPool();
+  Stream<List<PropertyModel>> watchFeaturedListings() =>
+      watchHomePropertyPool();
 
   /// Ranks listings by `property_analytics/{id}.views` (same idea as iOS Home).
   /// Uses batched whereIn queries (≤ 30 per batch) instead of N individual doc
@@ -212,10 +270,7 @@ class PropertyRepository {
   /// row isn't blank.
   Stream<List<PropertyModel>> watchMostViewedListings() {
     const pool = 60;
-    return _baseQuery()
-        .limit(pool)
-        .snapshots()
-        .asyncMap((snap) async {
+    return _baseQuery().limit(pool).snapshots().asyncMap((snap) async {
       final list = _mapSnapshot(snap);
       if (list.isEmpty) return <PropertyModel>[];
 
@@ -236,8 +291,7 @@ class PropertyRepository {
             .get();
         for (final doc in analyticsSnap.docs) {
           final v = doc.data()['views'];
-          viewsMap[doc.id] =
-              v is int ? v : (v is num ? v.toInt() : 0);
+          viewsMap[doc.id] = v is int ? v : (v is num ? v.toInt() : 0);
         }
       }
 
@@ -301,11 +355,9 @@ class PropertyRepository {
       return Stream.value(const <PropertyModel>[]);
     }
 
-    const pool = 100; // 200 was unnecessarily large for client-side geo filtering.
-    return _baseQuery()
-        .limit(pool)
-        .snapshots()
-        .map((snap) {
+    const pool =
+        100; // 200 was unnecessarily large for client-side geo filtering.
+    return _baseQuery().limit(pool).snapshots().map((snap) {
       final list = _mapSnapshot(snap);
       return _filterNearbyList(list, city: cityTrim, state: stateTrim);
     });
@@ -324,15 +376,13 @@ class PropertyRepository {
     final s = state?.trim();
 
     if (c != null && c.isNotEmpty) {
-      final inCity = list
-          .where((p) => LocationMatch.citiesMatch(c, p.city))
-          .toList();
+      final inCity =
+          list.where((p) => LocationMatch.citiesMatch(c, p.city)).toList();
       if (inCity.isNotEmpty) return inCity.take(8).toList();
     }
     if (s != null && s.isNotEmpty) {
-      final inState = list
-          .where((p) => LocationMatch.statesMatch(s, p.state))
-          .toList();
+      final inState =
+          list.where((p) => LocationMatch.statesMatch(s, p.state)).toList();
       if (inState.isNotEmpty) return inState.take(8).toList();
     }
     return list.take(8).toList();
@@ -340,41 +390,119 @@ class PropertyRepository {
 
   /// Listings for the map tab (markers + list).
   Stream<List<PropertyModel>> watchMapListings() {
-    return _baseQuery()
-        .limit(50)
-        .snapshots()
-        .map(_mapSnapshot);
+    return _baseQuery().limit(50).snapshots().map(_mapSnapshot);
   }
 
   /// Live feed with optional server-side price cap and bedroom floor, then
   /// further client-side filtered by free-text query and type.
-  Stream<List<PropertyModel>> watchFilteredListings(PropertyFilter filter) {
+  /// [limitOverride], when set, replaces the default page-size fetch limit —
+  /// used by [explore_screen.dart]'s "Load more" to widen the query instead
+  /// of capping results at a single page with no way to see more. Omitted
+  /// (the default), behavior is identical to before pagination existed.
+  Stream<List<PropertyModel>> watchFilteredListings(
+    PropertyFilter filter, {
+    int? limitOverride,
+  }) {
     Query<Map<String, dynamic>> q = _baseQuery();
 
     if (filter.minBedrooms > 0) {
       q = q.where('bedrooms', isGreaterThanOrEqualTo: filter.minBedrooms);
     }
-    if (filter.maxPrice != null) {
+    // Only push maxPrice to Firestore when there's no currency to reconcile
+    // — a currency-aware bound has to run client-side against
+    // PropertyModel.currencyCode too (see the block below), which Firestore
+    // can't do in one .where(). Every non-AI caller never sets
+    // currencyCode, so this preserves their exact prior query/index usage.
+    if (filter.maxPrice != null && filter.currencyCode == null) {
       q = q.where('price', isLessThanOrEqualTo: filter.maxPrice);
     }
-    if (filter.propertyType != null) {
+    // "airbnb" is special: some legacy documents carry `airbnbInfo` but were
+    // never given `propertyType: 'airbnb'` (see PropertyModel.isAirbnbListing,
+    // which already models this dual case). A server-side equality filter on
+    // `propertyType` would silently exclude those docs before they ever
+    // reach the client — the same class of bug already fixed on iOS's
+    // PulseFinderSearchExecutor. So for "airbnb" specifically, fetch without
+    // the Firestore-level constraint and apply the broader isAirbnbListing
+    // check client-side instead; every other propertyType keeps the
+    // server-side filter unchanged.
+    final isAirbnbTypeFilter = filter.propertyType?.toLowerCase() == 'airbnb';
+    if (filter.propertyType != null && !isAirbnbTypeFilter) {
       q = q.where('propertyType', isEqualTo: filter.propertyType);
     }
 
-    return q.limit(AppConstants.propertiesPageSize).snapshots().map((snap) {
+    // The server-side `.limit` truncates BEFORE any client-side filter runs.
+    // For every other propertyType that's fine — the type is pushed to
+    // Firestore above, so the fetched window already contains only matching
+    // docs. But "airbnb" is filtered entirely client-side (below), so a
+    // 20-doc window pulled from the whole collection very likely contains no
+    // airbnb listings at all, making short-stay search return nothing even
+    // when plenty exist. Fetch a much larger pool in that case so the
+    // client-side airbnb (+ location/query/amenity) filters have a real
+    // population to narrow, then cap the survivors back to a page below.
+    //
+    // [limitOverride] is expressed as the desired *final* result count (a
+    // page-size multiple), not the raw fetch limit — for the airbnb pool it
+    // scales the raw fetch proportionally so "load more" still has enough
+    // raw docs to filter from, instead of shrinking the pool to the page size.
+    final desiredResultCount = limitOverride ?? AppConstants.propertiesPageSize;
+    final fetchLimit = isAirbnbTypeFilter
+        ? (AppConstants.clientSideTypeFilterPoolSize *
+                (desiredResultCount / AppConstants.propertiesPageSize))
+            .ceil()
+        : desiredResultCount;
+
+    return q.limit(fetchLimit).snapshots().map((snap) {
       var list = _mapSnapshot(snap);
+      if (isAirbnbTypeFilter) {
+        // Broadened from isAirbnbListing to isShortStayListing so a listing
+        // saved under the `listing_type: short_stay` convention (not just
+        // `propertyType: airbnb`) is included — matching the app's own
+        // authoritative short-stay search. See PropertyModel.isShortStayListing.
+        list = list.where((p) => p.isShortStayListing).toList();
+      }
       // Client-side filters (no composite Firestore index needed).
+      //
+      // Phase 2.5: was a literal-whole-string match against title/city/state
+      // only. SearchRelevance checks each significant (synonym-canonicalized)
+      // word of the query against title, description, features/amenities,
+      // searchTags (the indexing trigger's output), and city/state — same
+      // "narrow to what matches" job, materially more of the document
+      // actually gets searched.
       if (filter.query.isNotEmpty) {
-        final lower = filter.query.toLowerCase();
         list = list
-            .where((p) =>
-                p.title.toLowerCase().contains(lower) ||
-                p.city.toLowerCase().contains(lower) ||
-                p.state.toLowerCase().contains(lower))
+            .where((p) => SearchRelevance.matches(p, filter.query))
             .toList();
+      }
+      // Geospatial radius (Phase 2.5) — see PropertyFilter.radiusKm's doc
+      // comment. Unused today (nothing sets these three fields yet); ready
+      // for a future AI capability to populate them.
+      if (filter.nearLatitude != null &&
+          filter.nearLongitude != null &&
+          filter.radiusKm != null) {
+        list = LocationSearchService.withinRadius(
+          list,
+          lat: filter.nearLatitude!,
+          lng: filter.nearLongitude!,
+          radiusKm: filter.radiusKm!,
+        );
       }
       if (filter.minBathrooms > 0) {
         list = list.where((p) => p.bathrooms >= filter.minBathrooms).toList();
+      }
+      // Currency-aware price filtering — only engages when a caller
+      // explicitly sets currencyCode (currently: AiSearchService, when the
+      // AI parses an explicit currency out of the query). Narrows to
+      // matching-currency listings FIRST, so minPrice/maxPrice below only
+      // ever compare numbers that are actually denominated the same way —
+      // otherwise "under JMD 30 million" could silently match a USD
+      // listing priced at 200000, which reads as "under 30 million" but is
+      // a completely different, much higher price in real terms.
+      if (filter.currencyCode != null) {
+        final cc = filter.currencyCode!.toUpperCase();
+        list = list.where((p) => p.currencyCode.toUpperCase() == cc).toList();
+        if (filter.maxPrice != null) {
+          list = list.where((p) => p.price <= filter.maxPrice!).toList();
+        }
       }
       if (filter.minPrice != null) {
         list = list.where((p) => p.price >= filter.minPrice!).toList();
@@ -388,8 +516,8 @@ class PropertyRepository {
       }
       if (filter.status != null) {
         list = list
-            .where((p) =>
-                p.status.toLowerCase() == filter.status!.toLowerCase())
+            .where(
+                (p) => p.status.toLowerCase() == filter.status!.toLowerCase())
             .toList();
       }
       // Location filters
@@ -407,8 +535,7 @@ class PropertyRepository {
       // Amenities filter
       if (filter.amenities.isNotEmpty) {
         list = list.where((p) {
-          final pFeatures =
-              p.features.map((f) => f.toLowerCase()).toSet();
+          final pFeatures = p.features.map((f) => f.toLowerCase()).toSet();
           return filter.amenities
               .every((a) => pFeatures.contains(a.toLowerCase()));
         }).toList();
@@ -427,70 +554,81 @@ class PropertyRepository {
       // Advanced: special features (match against property features list)
       if (filter.hasPool) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('pool')))
+            .where(
+                (p) => p.features.any((f) => f.toLowerCase().contains('pool')))
             .toList();
       }
       if (filter.hasGarage) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('garage')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('garage')))
             .toList();
       }
       if (filter.hasGarden) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('garden')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('garden')))
             .toList();
       }
       if (filter.hasParking) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('parking')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('parking')))
             .toList();
       }
       if (filter.hasElevator) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('elevator')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('elevator')))
             .toList();
       }
       if (filter.hasBalcony) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('balcony')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('balcony')))
             .toList();
       }
       if (filter.petFriendly) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('pet')))
+            .where(
+                (p) => p.features.any((f) => f.toLowerCase().contains('pet')))
             .toList();
       }
       if (filter.furnished) {
         list = list
-            .where((p) => p.features
-                .any((f) => f.toLowerCase().contains('furnish')))
+            .where((p) =>
+                p.features.any((f) => f.toLowerCase().contains('furnish')))
             .toList();
+      }
+      // Verified Realtor Rewards, Part 3 — "Verified Realtors Only".
+      if (filter.verifiedRealtorsOnly) {
+        list = list.where((p) => p.isListerVerified).toList();
       }
       // Date filters
       if (filter.dateFrom != null) {
         list = list
             .where((p) =>
-                p.createdAt != null &&
-                !p.createdAt!.isBefore(filter.dateFrom!))
+                p.createdAt != null && !p.createdAt!.isBefore(filter.dateFrom!))
             .toList();
       }
       if (filter.dateTo != null) {
         list = list
             .where((p) =>
-                p.createdAt != null &&
-                !p.createdAt!.isAfter(filter.dateTo!))
+                p.createdAt != null && !p.createdAt!.isAfter(filter.dateTo!))
             .toList();
       }
 
-      // Apply sort — mirrors iOS SearchViewModel sort options
-      switch (filter.sortBy) {
+      // Apply sort — mirrors iOS SearchViewModel sort options.
+      //
+      // Phase 2.5: added 'relevance', and made it the implicit sort whenever
+      // there's a free-text query and the caller didn't explicitly ask for
+      // one of the other 5 sorts — those 5 are completely unchanged, and a
+      // caller with no query and no sortBy still falls through to the
+      // original "keep Firestore natural order" default.
+      final effectiveSortBy = (filter.sortBy == null && filter.query.isNotEmpty)
+          ? 'relevance'
+          : filter.sortBy;
+      switch (effectiveSortBy) {
         case 'price_asc':
           list.sort((a, b) => a.price.compareTo(b.price));
         case 'price_desc':
@@ -508,10 +646,22 @@ class PropertyRepository {
             return ad.compareTo(bd);
           });
         case 'sqft_desc':
-          list.sort(
-              (a, b) => b.squareFootage.compareTo(a.squareFootage));
+          list.sort((a, b) => b.squareFootage.compareTo(a.squareFootage));
+        case 'relevance':
+          list.sort((a, b) => SearchRelevance.relevanceScore(b, filter.query)
+              .compareTo(SearchRelevance.relevanceScore(a, filter.query)));
         default:
           break; // keep Firestore natural order
+      }
+
+      // When a larger pool was fetched for a client-side-only type filter
+      // (airbnb), cap the sorted survivors back to the desired result count
+      // (a page, or however many pages "load more" has requested) so callers
+      // see the same result-count semantics as every other filtered search.
+      // Applied AFTER the sort, so it keeps the most relevant/appropriate
+      // page rather than an arbitrary prefix.
+      if (isAirbnbTypeFilter && list.length > desiredResultCount) {
+        list = list.sublist(0, desiredResultCount);
       }
 
       return list;
@@ -688,9 +838,8 @@ class PropertyRepository {
       hostUserId: hostId,
     );
 
-    final ref = _db
-        .collection(AppConstants.conversationsCollection)
-        .doc(threadId);
+    final ref =
+        _db.collection(AppConstants.conversationsCollection).doc(threadId);
 
     final existing = await ref.get();
     if (existing.exists) return threadId;
@@ -736,9 +885,12 @@ class PropertyRepository {
       'propertyTitle': property.title,
       'lastMessage': '',
       'lastMessageAt': FieldValue.serverTimestamp(),
-      'unreadCounts': {
-        currentUserId: 0,
-        hostId: 0,
+      // Mirrors iOS `MessageViewModel.createConversation`: the creator
+      // starts "caught up"; the other participant's absence from this map
+      // reads as unread by MessagingService.isConversationUnread until they
+      // open the thread.
+      'lastReadAtByUser': {
+        currentUserId: FieldValue.serverTimestamp(),
       },
     });
 
@@ -796,9 +948,10 @@ class PropertyRepository {
       },
       'lastMessage': '',
       'lastMessageAt': FieldValue.serverTimestamp(),
-      'unreadCounts': {
-        a: 0,
-        b: 0,
+      // See createConversation above — mirrors iOS's creator-starts-caught-up
+      // initialization of `lastReadAtByUser`.
+      'lastReadAtByUser': {
+        a: FieldValue.serverTimestamp(),
       },
     });
 
@@ -939,9 +1092,8 @@ class PropertyRepository {
 
       final currentTotal =
           (propSnap.data()?['totalLikes'] as num?)?.toInt() ?? 0;
-      final newTotal = newLiked
-          ? currentTotal + 1
-          : (currentTotal - 1).clamp(0, 0x7fffffff);
+      final newTotal =
+          newLiked ? currentTotal + 1 : (currentTotal - 1).clamp(0, 0x7fffffff);
 
       tx.set(
         userRef,
@@ -980,9 +1132,8 @@ class PropertyRepository {
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     };
-    final ref = await _db
-        .collection(AppConstants.propertiesCollection)
-        .add(payload);
+    final ref =
+        await _db.collection(AppConstants.propertiesCollection).add(payload);
     return ref.id;
   }
 
@@ -1010,11 +1161,117 @@ class PropertyRepository {
 
   /// Overwrites changed fields on an existing property doc.
   Future<void> updateProperty(String id, Map<String, dynamic> data) async {
-    await _db
-        .collection(AppConstants.propertiesCollection)
-        .doc(id)
-        .update({
+    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
       ...data,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Valid next statuses for each current status — mirrors iOS
+  /// `PropertyViewModel.isValidStatusTransition`. A status only ever
+  /// transitions along these edges (same-status no-ops are always allowed).
+  static const Map<String, List<String>> _validStatusTransitions = {
+    'available': ['pending', 'sold', 'rented', 'expired', 'archived'],
+    'pending': ['available', 'sold', 'rented'],
+    'sold': ['archived'],
+    'rented': ['available', 'archived'],
+    'expired': ['available', 'archived'],
+    'archived': ['available'],
+    'deleted': [],
+  };
+
+  /// Statuses selectable from [currentStatus], for building a picker that
+  /// never offers a dead-end selection.
+  static List<String> validNextStatuses(String currentStatus) =>
+      _validStatusTransitions[currentStatus] ?? const [];
+
+  /// Updates a property's `status` with the same validation iOS enforces:
+  /// the transition must be one of [_validStatusTransitions], and the caller
+  /// must be the property's owner/realtor or an admin. Also keeps
+  /// `listingStatus` (used for listing-limit enforcement) in sync — mirrors
+  /// iOS `PropertyViewModel.updatePropertyStatus`.
+  ///
+  /// Unlike iOS, this does not (yet) notify users who saved/liked the
+  /// listing on sold/rented — that requires a Cloud Function this client
+  /// can't safely replicate (writing into another user's notifications
+  /// subcollection directly is not something the client should do).
+  Future<void> updatePropertyStatus({
+    required String propertyId,
+    required String newStatus,
+    required String currentUserId,
+    bool isAdmin = false,
+    String? reason,
+  }) async {
+    final ref =
+        _db.collection(AppConstants.propertiesCollection).doc(propertyId);
+    final doc = await ref.get();
+    final data = doc.data();
+    if (!doc.exists || data == null) {
+      throw StateError('Property not found.');
+    }
+
+    final currentStatus = data['status'] as String? ?? 'available';
+    if (currentStatus != newStatus) {
+      final allowed = _validStatusTransitions[currentStatus] ?? const [];
+      if (!allowed.contains(newStatus)) {
+        throw StateError(
+          'Cannot change status from "$currentStatus" to "$newStatus".',
+        );
+      }
+    }
+
+    final ownerId = data['ownerId'] as String? ?? data['owner_id'] as String?;
+    final realtorId =
+        data['realtorId'] as String? ?? data['realtor_id'] as String?;
+    if (!isAdmin && currentUserId != ownerId && currentUserId != realtorId) {
+      throw StateError("You don't have permission to update this listing.");
+    }
+
+    final isActiveNext =
+        !{'expired', 'archived', 'deleted'}.contains(newStatus);
+    await ref.update({
+      'status': newStatus,
+      'lastStatusUpdate': FieldValue.serverTimestamp(),
+      'listingStatus': isActiveNext ? 'active' : 'expired',
+      'updatedAt': FieldValue.serverTimestamp(),
+      if (reason != null && reason.trim().isNotEmpty)
+        'statusChangeReason': reason.trim(),
+    });
+  }
+
+  /// "Mark as Active" recovery action for a nudged/inactivity-flagged
+  /// listing — mirrors iOS `BackendSyncViewModel.markPropertyAsActive`.
+  /// Unlike iOS (which only writes `status: "active"` and leaves the flags
+  /// set, so its own recovery button never actually disappears), this also
+  /// clears [isFlaggedForInactivity]/[isVisibilityReduced]/`nudgeCount` so
+  /// the flagged-state UI resolves — see PARITY_AUDIT_REPORT.md Phase 4.8.
+  Future<void> markPropertyActive({
+    required String propertyId,
+    required String currentUserId,
+    bool isAdmin = false,
+  }) async {
+    final ref =
+        _db.collection(AppConstants.propertiesCollection).doc(propertyId);
+    final doc = await ref.get();
+    final data = doc.data();
+    if (!doc.exists || data == null) {
+      throw StateError('Property not found.');
+    }
+
+    final ownerId = data['ownerId'] as String? ?? data['owner_id'] as String?;
+    final realtorId =
+        data['realtorId'] as String? ?? data['realtor_id'] as String?;
+    if (!isAdmin && currentUserId != ownerId && currentUserId != realtorId) {
+      throw StateError("You don't have permission to update this listing.");
+    }
+
+    await ref.update({
+      'status': 'available',
+      'listingStatus': 'active',
+      'isFlaggedForInactivity': false,
+      'isVisibilityReduced': false,
+      'nudgeCount': 0,
+      'lastStatusUpdate': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
@@ -1022,10 +1279,7 @@ class PropertyRepository {
   /// Soft-deletes a property — sets `deleted: true` so it disappears from
   /// all queries that use [_baseQuery] but the doc is not destroyed.
   Future<void> softDeleteProperty(String id) async {
-    await _db
-        .collection(AppConstants.propertiesCollection)
-        .doc(id)
-        .update({
+    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
       'deleted': true,
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -1060,17 +1314,13 @@ class PropertyRepository {
 
   Future<void> renewListing(String id) async {
     final now = DateTime.now();
-    await _db
-        .collection(AppConstants.propertiesCollection)
-        .doc(id)
-        .update({
+    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
       'status': 'available',
       'isFeatured': false,
       'featuredUntil': FieldValue.delete(),
       // Mirror iOS ListingExpirationViewModel.renewListing — set new expiry date
       // so the listing is visible again immediately without waiting for Cloud Function.
-      'expirationDate': Timestamp.fromDate(
-          now.add(const Duration(days: 30))),
+      'expirationDate': Timestamp.fromDate(now.add(const Duration(days: 30))),
       'lastRenewalDate': Timestamp.fromDate(now),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -1082,10 +1332,7 @@ class PropertyRepository {
   /// marked status yet" comment in PropertyViewModel.isDiscoverable().
   Future<void> markListingExpired(String id) async {
     try {
-      await _db
-          .collection(AppConstants.propertiesCollection)
-          .doc(id)
-          .update({
+      await _db.collection(AppConstants.propertiesCollection).doc(id).update({
         'status': 'expired',
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -1096,10 +1343,7 @@ class PropertyRepository {
 
   /// Boosts a listing as featured until [until].
   Future<void> boostListing(String id, DateTime until) async {
-    await _db
-        .collection(AppConstants.propertiesCollection)
-        .doc(id)
-        .update({
+    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
       'isFeatured': true,
       'featuredUntil': Timestamp.fromDate(until),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -1118,7 +1362,12 @@ class PropertyRepository {
     final subs = <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
 
     DateTime? start(Map<String, dynamic> m) {
-      for (final k in ['checkInDate', 'check_in_date', 'checkIn', 'startDate']) {
+      for (final k in [
+        'checkInDate',
+        'check_in_date',
+        'checkIn',
+        'startDate'
+      ]) {
         final v = m[k];
         if (v is Timestamp) return v.toDate();
       }
@@ -1185,9 +1434,62 @@ class PropertyRepository {
     );
     attach(
       key: 'host_bookings:hostUserId',
-      query: _db.collection('host_bookings').where('hostUserId', isEqualTo: hostId),
+      query: _db
+          .collection('host_bookings')
+          .where('hostUserId', isEqualTo: hostId),
       sourceCollection: 'host_bookings',
     );
+
+    controller.onCancel = () async {
+      for (final s in subs) {
+        await s.cancel();
+      }
+    };
+    return controller.stream;
+  }
+
+  /// Live count of non-deleted properties owned/hosted by [uid] — Host
+  /// Dashboard's "Total Listings" stat. Moved here from a screen-level
+  /// direct `FirebaseFirestore.instance` call so it goes through the same
+  /// injected `_db` every other query in this repository uses (and so it
+  /// can be exercised against a fake Firestore in widget tests).
+  Stream<int> watchHostListingsCount(String uid) {
+    final controller = StreamController<int>.broadcast();
+    final latest =
+        <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    final subs = <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
+
+    void emit() {
+      final byId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+      for (final docs in latest.values) {
+        for (final d in docs) {
+          byId[d.id] = d;
+        }
+      }
+      final count = byId.values
+          .where((d) => (d.data()['deleted'] as bool?) != true)
+          .length;
+      controller.add(count);
+    }
+
+    void attach(String key, Query<Map<String, dynamic>> q) {
+      final sub = q.snapshots().listen(
+        (snap) {
+          latest[key] = snap.docs;
+          emit();
+        },
+        onError: (_) {
+          latest[key] = const [];
+          emit();
+        },
+      );
+      subs.add(sub);
+    }
+
+    final col = _db.collection(AppConstants.propertiesCollection);
+    attach('hostId', col.where('hostId', isEqualTo: uid).limit(120));
+    attach('realtorId', col.where('realtorId', isEqualTo: uid).limit(120));
+    attach('ownerId', col.where('ownerId', isEqualTo: uid).limit(120));
 
     controller.onCancel = () async {
       for (final s in subs) {
@@ -1229,9 +1531,9 @@ class PropertyRepository {
       // Neither collection had this ID — fall back to a direct write so the
       // host dashboard optimistic update still resolves.
       await _db.collection('bookings').doc(bookingId).set(
-        payload,
-        SetOptions(merge: true),
-      );
+            payload,
+            SetOptions(merge: true),
+          );
     }
   }
 
@@ -1253,9 +1555,20 @@ class PropertyRepository {
   ) {
     // Mirror iOS PropertyViewModel.isDiscoverable():
     //   !deleted  AND  status not in [expired, archived, deleted]  AND  !isListingExpired
+    //
+    // iOS additionally suppresses nudge-flagged listings from every
+    // discovery feed via a *server-side* query filter
+    // (`.whereField("isVisibilityReduced", isEqualTo: false)` in
+    // PropertyLoadingService/PaginatedPropertyService). We can't mirror that
+    // as a Firestore-level filter for the same reason `deleted` isn't
+    // filtered server-side above — `isEqualTo: false` silently excludes any
+    // doc where the field is absent, which would hide every property that
+    // predates this feature. So it's enforced here client-side instead,
+    // alongside isDiscoverable.
     final active = <PropertyModel>[];
     for (final doc in snap.docs) {
       final p = PropertyModel.fromFirestore(doc);
+      if (p.isVisibilityReduced) continue;
       if (!p.isDiscoverable) {
         // If the property is expired by date but status hasn't been updated yet,
         // write back to Firestore so the cache stays consistent and other clients

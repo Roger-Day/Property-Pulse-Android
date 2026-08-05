@@ -9,12 +9,17 @@ class IosNavBarItem {
     required this.selectedIcon,
     required this.label,
     required this.semanticLabel,
+    this.badgeCount,
   });
 
   final IconData icon;
   final IconData selectedIcon;
   final String label;
   final String semanticLabel;
+
+  /// Small red count badge on the icon (e.g. unread messages) — null or 0
+  /// shows nothing. Matches iOS's tab-bar badge on Messages.
+  final int? badgeCount;
 }
 
 /// Floating iOS-style bottom tab bar — visual parity with iOS `MainTabView`.
@@ -231,18 +236,47 @@ class _NavBarButton extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                AnimatedSwitcher(
-                  duration: _colorDuration,
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: ScaleTransition(scale: animation, child: child),
-                  ),
-                  child: Icon(
-                    selected ? item.selectedIcon : item.icon,
-                    key: ValueKey(selected),
-                    size: iconSize,
-                    color: color,
-                  ),
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    AnimatedSwitcher(
+                      duration: _colorDuration,
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: ScaleTransition(scale: animation, child: child),
+                      ),
+                      child: Icon(
+                        selected ? item.selectedIcon : item.icon,
+                        key: ValueKey(selected),
+                        size: iconSize,
+                        color: color,
+                      ),
+                    ),
+                    if ((item.badgeCount ?? 0) > 0)
+                      Positioned(
+                        right: -6,
+                        top: -3,
+                        child: Container(
+                          constraints:
+                              const BoxConstraints(minWidth: 15, minHeight: 15),
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.all(Radius.circular(8)),
+                          ),
+                          child: Center(
+                            child: Text(
+                              item.badgeCount! > 9 ? '9+' : '${item.badgeCount}',
+                              style: const TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
                 if (showLabel) ...[
                   const SizedBox(height: 3),

@@ -8,11 +8,17 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../models/ai_capability.dart';
+import '../../models/ai_listing_draft.dart';
 import '../../models/project_model.dart';
 import '../../models/property_model.dart';
+import '../../providers/ai_feature_flags_provider.dart';
 import '../../repositories/project_repository.dart';
 import '../../repositories/property_repository.dart';
+import '../../services/ai/ai_listing_service.dart';
+import '../../services/search/location_search_service.dart';
 import '../../utils/listing_expiration_policy.dart';
+import '../../widgets/ai_listing_suggestion_sheet.dart';
 import 'listing_form_widgets.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,10 +31,16 @@ class EditPropertyScreen extends StatefulWidget {
     super.key,
     required this.propertyId,
     required this.userId,
+    this.isAdminContext = false,
   });
 
   final String propertyId;
   final String userId;
+
+  /// Mirrors iOS `EditPropertyView(isAdminContext: true)` — lets an admin
+  /// edit any listing regardless of ownership, bypassing the owner-only
+  /// gate below.
+  final bool isAdminContext;
 
   @override
   State<EditPropertyScreen> createState() => _EditPropertyScreenState();
@@ -160,7 +172,7 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
     final isOwner = (host != null && host.isNotEmpty && host == widget.userId) ||
         (realtor != null && realtor.isNotEmpty && realtor == widget.userId) ||
         (owner != null && owner.isNotEmpty && owner == widget.userId);
-    if (!isOwner) {
+    if (!isOwner && !widget.isAdminContext) {
       setState(() {
         _notOwner = true;
         _loading = false;
@@ -245,8 +257,11 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
     final urls = <String>[];
     for (final xFile in _newImages) {
       final file = File(xFile.path);
+      // `property_images/` — the only property-photo path storage.rules
+      // grants (`properties/` has no rule and falls through to the
+      // deny-all catch-all, which would fail every upload here).
       final ref = storage.ref().child(
-          'properties/${widget.propertyId}/${DateTime.now().millisecondsSinceEpoch}_${xFile.name}');
+          'property_images/${widget.propertyId}/${DateTime.now().millisecondsSinceEpoch}_${xFile.name}');
       final task = await ref.putFile(file);
       urls.add(await task.ref.getDownloadURL());
     }
@@ -254,6 +269,45 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
   }
 
   // ── Submit ─────────────────────────────────────────────────────────────────
+
+  /// Snapshot of the form's current structured facts — same shape
+  /// `_submit()` below writes to Firestore, just read live so the
+  /// generated description reflects whatever the user has typed so far
+  /// (which may differ from what's still saved). Passes `propertyId` so the
+  /// backend can verify ownership and attach the suggestion to the document
+  /// — see `ai-listing-functions.js`'s `assertOwnsPropertyOrIsAdmin`.
+  AiListingDraft _currentAiDraft() {
+    return AiListingDraft(
+      title: _titleCtrl.text,
+      propertyType: propertyTypes[_propertyTypeIndex],
+      listingType: listingTypes[_listingTypeIndex],
+      bedrooms: _isCommercialLike ? null : _bedrooms,
+      bathrooms: _isCommercialLike ? null : _bathrooms,
+      squareFootage: int.tryParse(_sqftCtrl.text.trim()),
+      city: _cityCtrl.text,
+      state: _stateCtrl.text,
+      price: double.tryParse(_priceCtrl.text.trim()),
+      currencyCode: _currencyCtrl.text,
+      yearBuilt: int.tryParse(_yearCtrl.text.trim()),
+      features: _selectedAmenities.toList(),
+    );
+  }
+
+  Future<void> _generateAiDescription() async {
+    final suggestion = await showAiListingSuggestionSheet(
+      context: context,
+      service: context.read<AiListingService>(),
+      getDraft: _currentAiDraft,
+      propertyId: widget.propertyId,
+    );
+    // Never applied automatically — only on explicit Accept, which is what
+    // makes showAiListingSuggestionSheet resolve with a non-null value. The
+    // live `description` field is untouched until the user taps Save below,
+    // exactly like typing into the field by hand would be.
+    if (suggestion != null && mounted) {
+      setState(() => _descCtrl.text = suggestion.description);
+    }
+  }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -283,6 +337,14 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
       final typeComboChanged =
           newPt != p.propertyType.toLowerCase() || newLt != oldLt;
 
+      // Best-effort — never blocks the save. See
+      // LocationSearchService.geocodeForLocationPayload.
+      final geocoded = await LocationSearchService.geocodeForLocationPayload(
+        street: _streetCtrl.text.trim(),
+        city: _cityCtrl.text.trim(),
+        state: _stateCtrl.text.trim(),
+      );
+
       final updates = <String, dynamic>{
         'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(),
@@ -300,6 +362,7 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
           'city': _cityCtrl.text.trim(),
           'state': _stateCtrl.text.trim(),
           'zipCode': _zipCtrl.text.trim(),
+          ...geocoded,
         },
         'features': _selectedAmenities.toList(),
         if (_isAirbnb)
@@ -492,6 +555,17 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
                         hint: 'Describe the property...',
                         maxLines: 4,
                       ),
+                      if (context
+                          .watch<AiFeatureFlagsProvider>()
+                          .isEnabled(AiCapability.listingGeneration))
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: _generateAiDescription,
+                            icon: const Icon(Icons.auto_awesome, size: 18),
+                            label: const Text('Generate with AI'),
+                          ),
+                        ),
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -977,9 +1051,22 @@ class _FilteredStatusChips extends StatelessWidget {
       runSpacing: 8,
       children: allowedIndexes.map((index) {
         final selected = index == selectedIndex;
+        // Matches _ChipSelector's explicit styling (property type, listing
+        // type chips elsewhere on this screen) — without it, ChoiceChip
+        // falls back to Material's default unselected label/border colors,
+        // which read as washed-out next to the rest of the form.
         return ChoiceChip(
           label: Text(allLabels[index]),
           selected: selected,
+          selectedColor: AppColors.primary,
+          labelStyle: TextStyle(
+            color: selected ? Colors.white : AppColors.textPrimary,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          ),
+          backgroundColor: AppColors.surface,
+          side: BorderSide(
+            color: selected ? AppColors.primary : AppColors.border,
+          ),
           onSelected: (_) => onChanged(index),
         );
       }).toList(),

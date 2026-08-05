@@ -1,8 +1,33 @@
 // Unit tests for PropertyModel — computed getters, price display, location,
-// listing type normalisation, lister ownership check.
+// listing type normalisation, lister ownership check, and (Phase 2.5)
+// searchTags/searchRankingMultiplier construction + Firestore parsing.
 // iOS parity: Property.swift computed properties.
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:property_pulse/models/airbnb_info_model.dart';
 import 'package:property_pulse/models/property_model.dart';
+
+// Minimal DocumentSnapshot double — only `data()` is exercised by
+// PropertyModel.fromFirestore, so every other member falls through to
+// noSuchMethod (there's no fake_cloud_firestore/mockito dependency in this
+// project to build a full mock).
+// ignore: subtype_of_sealed_class
+class _FakeDoc implements DocumentSnapshot<Map<String, dynamic>> {
+  _FakeDoc(this._data);
+  final Map<String, dynamic> _data;
+
+  @override
+  final String id = 'fake-id';
+
+  @override
+  Map<String, dynamic>? data() => _data;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 PropertyModel _make({
   String id = 'p1',
@@ -18,6 +43,7 @@ PropertyModel _make({
   String? hostUserId,
   String status = 'available',
   DateTime? expirationDate,
+  AirbnbInfoModel? airbnbInfo,
 }) =>
     PropertyModel(
       id: id,
@@ -46,6 +72,7 @@ PropertyModel _make({
       ownerId: ownerId,
       hostUserId: hostUserId,
       expirationDate: expirationDate,
+      airbnbInfo: airbnbInfo,
     );
 
 void main() {
@@ -85,6 +112,134 @@ void main() {
         // An unset listingType is stored as '' and displayed with a fallback
         // in the UI rather than a default label.
         expect(_make(listingType: '').listingTypeLabel, '');
+      });
+    });
+
+    group('isShortStayListing — Pulse Finder short-stay universe', () {
+      test('propertyType airbnb is short-stay', () {
+        expect(_make(propertyType: 'airbnb').isShortStayListing, isTrue);
+      });
+
+      test('listing_type short_stay is short-stay even with a plain propertyType', () {
+        // Regression: this is the case isAirbnbListing missed — a real
+        // short-stay listing saved under the listingType convention with a
+        // non-airbnb propertyType and no airbnbInfo. It must still be found
+        // by Pulse Finder's short-stay search.
+        expect(
+          _make(listingType: 'short_stay', propertyType: 'apartment').isShortStayListing,
+          isTrue,
+        );
+      });
+
+      test('listingType casing/separator variants still match', () {
+        expect(_make(listingType: 'shortStay', propertyType: 'house').isShortStayListing, isTrue);
+        expect(_make(listingType: 'short stay', propertyType: 'house').isShortStayListing, isTrue);
+        expect(_make(listingType: 'airbnb', propertyType: 'house').isShortStayListing, isTrue);
+      });
+
+      test('a plain for-sale house is not short-stay', () {
+        expect(_make(listingType: 'sale', propertyType: 'house').isShortStayListing, isFalse);
+      });
+
+      test('a plain long-term rental is not short-stay', () {
+        expect(_make(listingType: 'rent', propertyType: 'apartment').isShortStayListing, isFalse);
+      });
+
+      test('a stale airbnbInfo map on an ordinary rental still counts as short-stay here', () {
+        // isShortStayListing intentionally includes airbnbInfo (via
+        // isAirbnbListing) for the Pulse Finder search universe — see
+        // isShortStayHostListing below for why the *management-screen*
+        // decision must NOT use this getter.
+        expect(
+          _make(
+            listingType: 'for_rent',
+            propertyType: 'apartment',
+            airbnbInfo: const AirbnbInfoModel(),
+          ).isShortStayListing,
+          isTrue,
+        );
+      });
+    });
+
+    group('isShortStayHostListing — Manage/My Listings routing', () {
+      test('propertyType airbnb is a short-stay host listing', () {
+        expect(_make(propertyType: 'airbnb').isShortStayHostListing, isTrue);
+      });
+
+      test('listingType short_stay is a short-stay host listing', () {
+        expect(
+          _make(listingType: 'short_stay', propertyType: 'apartment').isShortStayHostListing,
+          isTrue,
+        );
+      });
+
+      test('a plain for-rent apartment is NOT a short-stay host listing', () {
+        expect(
+          _make(listingType: 'for_rent', propertyType: 'apartment').isShortStayHostListing,
+          isFalse,
+        );
+      });
+
+      test(
+          'regression: a stale airbnbInfo map on an ordinary for-rent listing must NOT '
+          'hide it from My Listings', () {
+        // Real production bug: a "Luxury Apartment" saved as
+        // listingType=for_rent, propertyType=apartment still carried a
+        // legacy airbnbInfo map from an older creation flow. Using the
+        // broader isShortStayListing (which checks airbnbInfo) wrongly
+        // excluded it from My Listings entirely, leaving the account's one
+        // genuine general listing invisible. isShortStayHostListing must
+        // ignore airbnbInfo and key only off listingType/propertyType, same
+        // as iOS Property.isShortStayHostListing.
+        final property = _make(
+          listingType: 'for_rent',
+          propertyType: 'apartment',
+          airbnbInfo: const AirbnbInfoModel(),
+        );
+        expect(property.isAirbnbListing, isTrue); // sanity: airbnbInfo is present
+        expect(property.isShortStayHostListing, isFalse);
+      });
+
+      test('a genuine short-stay listing with no airbnbInfo is still caught', () {
+        expect(
+          _make(listingType: 'short_stay', propertyType: 'house', airbnbInfo: null)
+              .isShortStayHostListing,
+          isTrue,
+        );
+      });
+    });
+
+    group('isShortStayListing / isShortStayHostListing — cross-platform parity fixture', () {
+      // Cases live in test/fixtures/short_stay_host_listing_cases.json, which
+      // iOS's PropertyShortStayHostListingParityTests.swift reads from this
+      // same path on disk. Edit the fixture, not this file, to add a case.
+      late List<Map<String, dynamic>> cases;
+
+      setUpAll(() {
+        final file = File('test/fixtures/short_stay_host_listing_cases.json');
+        final fixture = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+        cases = (fixture['cases'] as List).cast<Map<String, dynamic>>();
+      });
+
+      test('every fixture case matches both getters on this platform', () {
+        for (final c in cases) {
+          final property = _make(
+            propertyType: c['propertyType'] as String,
+            listingType: c['listingType'] as String,
+            airbnbInfo:
+                (c['hasAirbnbInfo'] as bool) ? const AirbnbInfoModel() : null,
+          );
+          expect(
+            property.isShortStayListing,
+            c['expectedIsShortStayListing'],
+            reason: '${c['description']}: isShortStayListing',
+          );
+          expect(
+            property.isShortStayHostListing,
+            c['expectedIsShortStayHostListing'],
+            reason: '${c['description']}: isShortStayHostListing',
+          );
+        }
       });
     });
 
@@ -208,6 +363,54 @@ void main() {
 
       test('statusLabel is non-empty', () {
         expect(_make().statusLabel, isNotEmpty);
+      });
+    });
+
+    group('searchTags / searchRankingMultiplier (Phase 2.5)', () {
+      test('default to empty list / null when not passed to the constructor', () {
+        final p = _make();
+        expect(p.searchTags, isEmpty);
+        expect(p.searchRankingMultiplier, isNull);
+      });
+
+      test('fromFirestore parses searchTags', () {
+        final doc = _FakeDoc({
+          'title': 't',
+          'description': 'd',
+          'price': 100000,
+          'searchTags': ['ocean view', 'pool', '3 bedroom'],
+        });
+        final p = PropertyModel.fromFirestore(doc);
+        expect(p.searchTags, ['ocean view', 'pool', '3 bedroom']);
+      });
+
+      test('fromFirestore parses searchRankingMultiplier as a double', () {
+        final doc = _FakeDoc({
+          'title': 't',
+          'description': 'd',
+          'price': 100000,
+          'searchRankingMultiplier': 1.15,
+        });
+        final p = PropertyModel.fromFirestore(doc);
+        expect(p.searchRankingMultiplier, 1.15);
+      });
+
+      test('fromFirestore defaults searchTags/searchRankingMultiplier when absent', () {
+        final doc = _FakeDoc({'title': 't', 'description': 'd', 'price': 100000});
+        final p = PropertyModel.fromFirestore(doc);
+        expect(p.searchTags, isEmpty);
+        expect(p.searchRankingMultiplier, isNull);
+      });
+
+      test('fromFirestore ignores non-string entries in searchTags', () {
+        final doc = _FakeDoc({
+          'title': 't',
+          'description': 'd',
+          'price': 100000,
+          'searchTags': ['pool', 42, null, ''],
+        });
+        final p = PropertyModel.fromFirestore(doc);
+        expect(p.searchTags, ['pool']);
       });
     });
   });

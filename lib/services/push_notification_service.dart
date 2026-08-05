@@ -50,24 +50,71 @@ class PushNotificationService {
   static String routeForData(Map<String, dynamic> data) => _routeFor(data);
 
   /// Converts a notification payload to a GoRouter path.
-  /// Mirrors iOS `PushNotificationService.handleNotification` routing logic.
+  /// Mirrors iOS `PushNotificationService.handleNotification` routing logic —
+  /// including its 3-way type-key fallback (`type` ?? `notificationType` ??
+  /// `notification_type`). The Cloud Functions backend is itself
+  /// inconsistent about which key it sends (`index.js`'s message
+  /// notification and every function in `booking-notification-functions.js`
+  /// use `notificationType`; `dispute-functions.js`/`cancellation-functions.js`
+  /// use `type`) — reading only `type` silently dropped every booking/message
+  /// notification tap to the generic fallback below.
   static String _routeFor(Map<String, dynamic> data) {
-    final type = data['type'] as String? ?? '';
+    final type = data['type'] as String? ??
+        data['notificationType'] as String? ??
+        data['notification_type'] as String? ??
+        '';
     switch (type) {
       // ── Messaging ──────────────────────────────────────────────────────────
       case 'message':
       case 'chat':
-        final threadId = data['threadId'] as String? ?? '';
+        // Cloud Functions sends `conversationId` (see `index.js`'s
+        // `sendMessageNotification`); `threadId` kept as a fallback in case
+        // another payload shape ever uses that name instead.
+        final threadId = data['conversationId'] as String? ??
+            data['threadId'] as String? ??
+            '';
         return threadId.isNotEmpty
             ? '/messages/thread/$threadId'
             : '/messages';
 
-      // ── Bookings & stays ───────────────────────────────────────────────────
+      // ── Bookings & stays (guest-facing) ─────────────────────────────────────
+      // Every value here is a real `notificationType`/`type` sent by
+      // `booking-notification-functions.js` or `cancellation-functions.js` —
+      // previously unreachable because of the field-name bug fixed above.
       case 'booking':
       case 'booking_confirmed':
+      case 'booking_declined':
       case 'booking_cancelled':
+      case 'booking_cancelled_by_guest':
+      case 'booking_cancellation':
+      case 'booking_expired':
+      case 'booking_paid':
+      case 'booking_payment_reminder_24h':
       case 'booking_request':
         return '/profile/my-stays';
+
+      // ── Bookings (host-facing) ───────────────────────────────────────────────
+      case 'host_booking_paid':
+      case 'booking_new_request':
+        return '/profile/host-dashboard';
+
+      // ── Disputes ───────────────────────────────────────────────────────────
+      // No standalone deep-linkable dispute route exists yet — routes to the
+      // stay/booking list a dispute is opened from, same fallback pattern
+      // used for reviews below.
+      case 'dispute_opened':
+      case 'dispute_resolved':
+        return '/profile/my-stays';
+
+      // ── Payouts (host-facing) ─────────────────────────────────────────────
+      case 'payout_released':
+        return '/profile/host-dashboard';
+
+      // ── Listing deletion ───────────────────────────────────────────────────
+      case 'property_deletion_warning':
+      case 'property_deleted':
+      case 'immediate_deletion_confirmation':
+        return '/profile/my-listings';
 
       // ── Appointments ───────────────────────────────────────────────────────
       // Routes to the specific appointment when the payload includes one
@@ -95,9 +142,15 @@ class PushNotificationService {
         return pid.isNotEmpty ? '/development/$pid' : '/home';
 
       // ── Verification & trust ───────────────────────────────────────────────
-      case 'verification':
+      // 'verification_approved' routes to the Verification Rewards screen
+      // (Verified Realtor Rewards, Part 7/8) with `celebrate=true` so the
+      // one-time celebration animation plays; other verification outcomes
+      // route to the plain status screen.
       case 'verification_approved':
+        return '/profile/verification-rewards?celebrate=true';
+      case 'verification':
       case 'verification_rejected':
+      case 'verification_revoked':
         return '/profile/identity-verification';
 
       // ── Reviews ────────────────────────────────────────────────────────────

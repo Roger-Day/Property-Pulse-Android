@@ -81,6 +81,13 @@ class AppConstants {
   static const int propertiesPageSize = 20;
   /// Home feed pool size (iOS loads a page then derives featured / recent client-side).
   static const int homePropertyPoolSize = 120;
+  /// Pool fetched from Firestore when a search's *type* filter can only run
+  /// client-side (currently "airbnb", whose legacy dual-case can't be pushed
+  /// to a server-side .where — see PropertyRepository.watchFilteredListings).
+  /// Much larger than [propertiesPageSize] so the client-side type filter has
+  /// a real population to narrow instead of an arbitrary 20-doc window that
+  /// likely contains no matching listings at all.
+  static const int clientSideTypeFilterPoolSize = 400;
   static const int messagesPageSize = 30;
 
   /// Image

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
@@ -29,6 +31,11 @@ class InAppBillingService extends ChangeNotifier {
       'com.propertypulse.owner.investor.monthly';
   static const airbnbHostProMonthlyId =
       'com.propertypulse.airbnbhost.pro.monthly';
+  static const airbnbHostPlusMonthlyId =
+      'com.propertypulse.airbnbhost.plus.monthly';
+  static const realtorProMonthlyId = 'com.propertypulse.realtor.pro.monthly';
+  static const realtorEliteMonthlyId =
+      'com.propertypulse.realtor.elite.monthly';
 
   static const boost7Id = 'com.propertypulse.boost.7days';
   static const boost14Id = 'com.propertypulse.boost.14days';
@@ -47,6 +54,9 @@ class InAppBillingService extends ChangeNotifier {
     ownerProMonthlyId,
     ownerInvestorMonthlyId,
     airbnbHostProMonthlyId,
+    airbnbHostPlusMonthlyId,
+    realtorProMonthlyId,
+    realtorEliteMonthlyId,
   };
 
   static const Set<String> boostProductIds = {
@@ -65,6 +75,12 @@ class InAppBillingService extends ChangeNotifier {
   bool isPremium = false;
   String? lastError;
 
+  /// Set when a purchase enters [PurchaseStatus.pending] (e.g. Google Family
+  /// Library "Ask to Buy") — distinct from [lastError] since this isn't a
+  /// failure, and distinct from the brief in-flight spinner since approval
+  /// can take hours or days. Mirrors iOS `SubscriptionError.purchasePending`.
+  String? pendingApprovalMessage;
+
   /// Set while a subscription purchase is in flight (UI parity with iOS plan-row spinner).
   String? purchasingSubscriptionProductId;
 
@@ -72,6 +88,23 @@ class InAppBillingService extends ChangeNotifier {
   /// Mirrors iOS `SubscriptionStatus.displayName` — lets the UI distinguish
   /// "Premium (Monthly)" from "Premium (Yearly)" once entitlement is confirmed.
   String? activeSubscriptionProductId;
+
+  /// Resolves which tier a legacy purchase should now count as — mirrors
+  /// iOS's grandfathering rules: subscribers who bought the old $4.99
+  /// host-listings add-on keep Host Pro access, and realtors who bought the
+  /// old general Premium plan (before role-tier plans existed) keep Realtor
+  /// Pro access. [role] is the signed-in user's role (e.g. 'realtor');
+  /// pass null/anything else to skip the realtor-specific rule.
+  String? effectiveTierProductId({String? role}) {
+    final active = activeSubscriptionProductId;
+    if (active == null) return null;
+    if (active == hostListingsMonthlyId) return airbnbHostProMonthlyId;
+    if ((active == monthlyProductId || active == yearlyProductId) &&
+        role == 'realtor') {
+      return realtorProMonthlyId;
+    }
+    return active;
+  }
 
   /// Human-readable plan name — matches iOS `SubscriptionStatus.displayName`.
   String get subscriptionDisplayName {
@@ -92,6 +125,12 @@ class InAppBillingService extends ChangeNotifier {
         return 'Owner Investor';
       case airbnbHostProMonthlyId:
         return 'Host Pro';
+      case airbnbHostPlusMonthlyId:
+        return 'Host Plus';
+      case realtorProMonthlyId:
+        return 'Realtor Pro';
+      case realtorEliteMonthlyId:
+        return 'Realtor Elite';
       default:
         return 'Premium';
     }
@@ -113,6 +152,15 @@ class InAppBillingService extends ChangeNotifier {
 
   /// Increments after a boost purchase is confirmed and Firestore is updated (for UI refresh).
   int boostSuccessGeneration = 0;
+
+  /// Current boost-credit balance — call [refreshBoostCredits] after login
+  /// or a pack purchase to keep this current.
+  int boostCredits = 0;
+
+  Future<void> refreshBoostCredits() async {
+    boostCredits = await PremiumBoostService.loadBoostCredits();
+    notifyListeners();
+  }
 
   Future<void> init() async {
     if (kIsWeb) {
@@ -139,6 +187,7 @@ class InAppBillingService extends ChangeNotifier {
     );
 
     await _queryProducts();
+    unawaited(refreshBoostCredits());
 
     // Silently rehydrate existing subscribers on launch — mirrors iOS
     // `Transaction.currentEntitlements` check in `SubscriptionService.init()`.
@@ -240,6 +289,32 @@ class InAppBillingService extends ChangeNotifier {
     await _iap.buyConsumable(purchaseParam: param);
   }
 
+  /// Consumable boost-credit pack purchase — not tied to a property; credits
+  /// land in the user's `boostCredits` balance for later redemption via
+  /// [redeemBoostCredit].
+  Future<void> purchaseBoostPackage(ProductDetails product) async {
+    lastError = null;
+    final param = PurchaseParam(productDetails: product);
+    await _iap.buyConsumable(purchaseParam: param);
+  }
+
+  /// Spends one boost credit on [propertyId] for [days] — no store purchase
+  /// involved, the credit was already paid for via a pack.
+  Future<void> redeemBoostCredit({
+    required String propertyId,
+    required int days,
+  }) async {
+    lastError = null;
+    await PremiumBoostService.applyBoostCredit(
+      repository: _propertyRepository,
+      propertyId: propertyId,
+      days: days,
+    );
+    await refreshBoostCredits();
+    boostSuccessGeneration++;
+    notifyListeners();
+  }
+
   int daysForBoostProduct(String productId) {
     switch (productId) {
       case boost7Id:
@@ -266,6 +341,41 @@ class InAppBillingService extends ChangeNotifier {
     }
   }
 
+  /// Writes `plan: "pro"` to `users/{uid}` — mirrors iOS
+  /// `SubscriptionService.syncBackendPlan(isActive: true)`. Without this,
+  /// the purchase only ever flips the in-memory [isPremium] flag: the
+  /// listing-limit Cloud Function (`listing-limit-functions.js`'s
+  /// `inferPlan`) and [ListingEntitlements.allowedActiveListingLimit] both
+  /// read `users.plan` from Firestore, so a subscriber's listing cap would
+  /// silently never actually increase, and the entitlement would vanish on
+  /// reinstall since nothing server-visible was ever set.
+  ///
+  /// For [productId] a Developer Pro/Growth product, also writes
+  /// `developerSubscriptionTier` ("pro"/"growth") — the separate field
+  /// `developer-monetization-functions.js`'s `onDeveloperProjectCreated`
+  /// trigger reads to enforce the 5/20 project cap. Without this, a paying
+  /// developer stayed capped at the free tier's 1-project limit server-side
+  /// and had every subsequent (already-paid-for) project silently rejected.
+  Future<void> _syncBackendPlan(String productId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final patch = <String, Object>{'plan': 'pro'};
+      if (productId == developerProMonthlyId) {
+        patch['developerSubscriptionTier'] = 'pro';
+      } else if (productId == developerGrowthMonthlyId) {
+        patch['developerSubscriptionTier'] = 'growth';
+      }
+      await FirebaseFirestore.instance.collection('users').doc(uid).set(
+        patch,
+        SetOptions(merge: true),
+      );
+    } catch (_) {
+      // Best-effort — same as iOS, which logs and continues rather than
+      // failing the purchase over a sync error.
+    }
+  }
+
   Future<void> _onPurchaseUpdates(List<PurchaseDetails> purchases) async {
     for (final purchase in purchases) {
       final pid = purchase.productID;
@@ -274,6 +384,17 @@ class InAppBillingService extends ChangeNotifier {
         if (subscriptionProductIds.contains(pid)) {
           purchasingSubscriptionProductId = pid;
         }
+        // Most `pending` events resolve within seconds (normal Play Billing
+        // processing latency), but the same status also covers genuinely
+        // long waits — e.g. Google Family Library "Ask to Buy" needing a
+        // family organizer's approval. Surface this so the user isn't left
+        // staring at an indefinite spinner with no explanation.
+        pendingApprovalMessage = subscriptionProductIds.contains(pid) ||
+                boostProductIds.contains(pid)
+            ? 'Waiting for purchase approval. If this was made under Family '
+                "Library sharing, it may need approval from your family "
+                "organizer — we'll update automatically once it's confirmed."
+            : pendingApprovalMessage;
         notifyListeners();
         continue;
       }
@@ -283,6 +404,7 @@ class InAppBillingService extends ChangeNotifier {
           purchasingSubscriptionProductId = null;
         }
         lastError = purchase.error?.message ?? 'Purchase failed';
+        pendingApprovalMessage = null;
         _pendingBoostPropertyId = null;
         notifyListeners();
         continue;
@@ -292,6 +414,7 @@ class InAppBillingService extends ChangeNotifier {
         if (subscriptionProductIds.contains(pid)) {
           purchasingSubscriptionProductId = null;
         }
+        pendingApprovalMessage = null;
         _pendingBoostPropertyId = null;
         notifyListeners();
         continue;
@@ -300,26 +423,46 @@ class InAppBillingService extends ChangeNotifier {
       if (purchase.status == PurchaseStatus.purchased ||
           purchase.status == PurchaseStatus.restored) {
         final id = purchase.productID;
+        pendingApprovalMessage = null;
 
         if (subscriptionProductIds.contains(id)) {
           purchasingSubscriptionProductId = null;
           isPremium = true;
           activeSubscriptionProductId = id;
+          await _syncBackendPlan(id);
           await _iap.completePurchase(purchase);
         } else if (boostProductIds.contains(id)) {
-          final propertyId = _pendingBoostPropertyId;
-          _pendingBoostPropertyId = null;
-          if (propertyId != null) {
+          final packCredits = PremiumBoostService.creditsForPackProduct(id);
+          if (packCredits > 0) {
+            // Boost-credit pack — not tied to a property, credits go to
+            // the user's balance for later redemption.
             try {
-              final days = daysForBoostProduct(id);
-              await PremiumBoostService.boostForDays(
-                repository: _propertyRepository,
-                propertyId: propertyId,
-                days: days,
+              await PremiumBoostService.creditBoostPackPurchase(
+                transactionId: purchase.purchaseID ?? id,
+                credits: packCredits,
               );
+              await refreshBoostCredits();
               boostSuccessGeneration++;
             } catch (e) {
               lastError = e.toString();
+            }
+          } else {
+            final propertyId = _pendingBoostPropertyId;
+            _pendingBoostPropertyId = null;
+            if (propertyId != null) {
+              try {
+                final days = daysForBoostProduct(id);
+                await PremiumBoostService.activateBoost(
+                  repository: _propertyRepository,
+                  propertyId: propertyId,
+                  productId: id,
+                  days: days,
+                  transactionId: purchase.purchaseID ?? id,
+                );
+                boostSuccessGeneration++;
+              } catch (e) {
+                lastError = e.toString();
+              }
             }
           }
           await _iap.completePurchase(purchase);

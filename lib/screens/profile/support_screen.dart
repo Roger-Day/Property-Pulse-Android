@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:in_app_review/in_app_review.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_colors.dart';
@@ -15,6 +16,16 @@ class SupportScreen extends StatelessWidget {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  /// Mirrors iOS `SupportService.requestAppRating()` (`SKStoreReviewController`).
+  Future<void> _requestReview() async {
+    final review = InAppReview.instance;
+    if (await review.isAvailable()) {
+      await review.requestReview();
+    } else {
+      await review.openStoreListing();
     }
   }
 
@@ -123,6 +134,12 @@ class SupportScreen extends StatelessWidget {
                   icon: Icons.lock_outline,
                   label: 'Privacy Policy',
                   onTap: () => _launch(AppConstants.privacyPolicyUrl),
+                ),
+                const Divider(height: 1, indent: 56),
+                _LinkTile(
+                  icon: Icons.star_outline_rounded,
+                  label: 'Rate the App',
+                  onTap: _requestReview,
                 ),
                 const Divider(height: 1, indent: 56),
                 const _LinkTile(

@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../constants/app_constants.dart';
 import '../models/admin_application.dart';
+import '../services/in_app_notification_service.dart';
 import 'admin_repository.dart';
 
 class AdminApplicationException implements Exception {
@@ -183,6 +185,24 @@ class AdminApplicationRepository {
       'createdAt': now,
       'updatedAt': now,
     });
+
+    // Mirrors iOS `AdminApplicationService.notifyAdminsOfNewApplication` —
+    // best-effort, never blocks the submission itself.
+    unawaited(_notifyAdminsOfNewApplication(applicantName: trimmedName));
+  }
+
+  Future<void> _notifyAdminsOfNewApplication({
+    required String applicantName,
+  }) async {
+    try {
+      final adminIds = await InAppNotificationService.allAdminUserIds();
+      await Future.wait(adminIds.map((adminId) => InAppNotificationService.send(
+            userId: adminId,
+            title: 'New Admin Application',
+            body: '$applicantName has submitted an admin application',
+            type: 'admin_application',
+          )));
+    } catch (_) {}
   }
 
   static String? _nullableTrim(String? s) {

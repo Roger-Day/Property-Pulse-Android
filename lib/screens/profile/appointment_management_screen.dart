@@ -131,6 +131,7 @@ class _AppointmentManagementScreenState
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh appointments',
             onPressed: _refresh,
           ),
         ],

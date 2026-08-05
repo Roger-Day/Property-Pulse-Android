@@ -64,8 +64,16 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
     super.dispose();
   }
 
-  Future<List<PropertyModel>> _fetch() {
-    return context.read<UserProfileRepository>().getMyListings(widget.userId);
+  Future<List<PropertyModel>> _fetch() async {
+    final listings =
+        await context.read<UserProfileRepository>().getMyListings(widget.userId);
+    // Short-stay/Airbnb listings are managed via the Host Dashboard segment,
+    // not here — mirrors iOS MyListingsView.loadMyListings's
+    // `!$0.isShortStayHostListing` filter. Uses isShortStayHostListing (not
+    // the broader isShortStayListing), which ignores stale airbnbInfo maps
+    // left over on ordinary for-sale/for-rent listings from older creation
+    // flows/migrations.
+    return listings.where((p) => !p.isShortStayHostListing).toList();
   }
 
   Future<void> _onRefresh() async {
@@ -918,6 +926,7 @@ class _PropertyAnalyticsSheetState extends State<_PropertyAnalyticsSheet> {
                   actions: [
                     IconButton(
                       icon: const Icon(Icons.close),
+                      tooltip: 'Close analytics',
                       onPressed: () => context.pop(),
                     ),
                   ],

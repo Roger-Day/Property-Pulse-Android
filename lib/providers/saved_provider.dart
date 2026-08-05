@@ -112,6 +112,33 @@ class SavedProvider extends ChangeNotifier {
     }
   }
 
+  /// Removes every saved property — mirrors iOS's Saved-screen "Clear all".
+  /// Optimistic (clears the local set immediately); any IDs that fail to
+  /// remove server-side are restored so the UI stays consistent with
+  /// Firestore rather than silently losing track of them.
+  Future<void> clearAll() async {
+    final uid = _userId;
+    if (uid == null || uid.isEmpty || _savedIds.isEmpty) return;
+
+    final idsToRemove = _savedIds.toList();
+    _savedIds = {};
+    notifyListeners();
+
+    final failed = <String>[];
+    await Future.wait(idsToRemove.map((id) async {
+      try {
+        await _repo.removeSavedById(userId: uid, propertyId: id);
+      } catch (_) {
+        failed.add(id);
+      }
+    }));
+
+    if (failed.isNotEmpty) {
+      _savedIds = {..._savedIds, ...failed};
+      notifyListeners();
+    }
+  }
+
   @override
   void dispose() {
     _subscription?.cancel();

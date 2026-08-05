@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
@@ -7,6 +8,11 @@ import '../services/analytics_service.dart';
 import '../services/apple_sign_in_helper.dart';
 import '../services/auth_service.dart';
 import '../services/crashlytics_service.dart';
+
+/// Why sign-in was blocked after Firebase Auth itself succeeded — mirrors
+/// iOS `AuthenticationViewModel+Firestore`'s `isDeleted`/`isBanned`/
+/// `isSuspended` gate on the `users/{uid}` doc.
+enum AccountBlockedReason { deleted, banned, suspended }
 
 class AuthProvider extends ChangeNotifier {
   AuthProvider() {
@@ -18,6 +24,9 @@ class AuthProvider extends ChangeNotifier {
       // AppAnalytics+AppAnalytics.swift + CrashlyticsService.setUserID
       AnalyticsService.syncUser(user);
       CrashlyticsService.shared.syncAuthUser(user);
+      if (user != null && !user.isAnonymous) {
+        unawaited(_checkAccountStatus(user));
+      }
     });
   }
 
@@ -32,6 +41,55 @@ class AuthProvider extends ChangeNotifier {
   bool get isSignedIn => _user != null;
 
   bool get isAnonymous => _user?.isAnonymous ?? false;
+
+  AccountBlockedReason? _blockedReason;
+
+  /// Set right after a sign-in whose account turned out to be deleted,
+  /// banned, or (currently) suspended — the UI should show a dedicated
+  /// alert and clear it via [clearBlockedReason]. The user has already
+  /// been force-signed-out by the time this is set.
+  AccountBlockedReason? get blockedReason => _blockedReason;
+
+  void clearBlockedReason() {
+    if (_blockedReason == null) return;
+    _blockedReason = null;
+    notifyListeners();
+  }
+
+  Future<void> _checkAccountStatus(User user) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final data = doc.data();
+      if (data == null) return;
+
+      if (data['isDeleted'] == true) {
+        await FirebaseAuth.instance.signOut();
+        _blockedReason = AccountBlockedReason.deleted;
+        notifyListeners();
+        return;
+      }
+      if (data['isBanned'] == true) {
+        await FirebaseAuth.instance.signOut();
+        _blockedReason = AccountBlockedReason.banned;
+        notifyListeners();
+        return;
+      }
+      if (data['isSuspended'] == true) {
+        final expiresAt = (data['suspensionExpiresAt'] as Timestamp?)?.toDate();
+        if (expiresAt != null && DateTime.now().isBefore(expiresAt)) {
+          await FirebaseAuth.instance.signOut();
+          _blockedReason = AccountBlockedReason.suspended;
+          notifyListeners();
+        }
+      }
+    } catch (_) {
+      // Best-effort — matches iOS's server-then-cache fallback intent; a
+      // failed check here must never block a legitimate sign-in.
+    }
+  }
 
   Future<void> signInWithEmail({
     required String email,

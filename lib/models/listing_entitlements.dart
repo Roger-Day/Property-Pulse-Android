@@ -1,6 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// Monetization listing quota — mirrors iOS `UserEntitlements` in Monetization.swift.
+///
+/// [activeListingLimit] is a legacy-compatible mirror of
+/// [totalListingAllowance], kept because this field name is read across many
+/// existing call sites. [baseListings]/[verifiedBonusListings]/
+/// [subscriptionBonusListings]/[totalListingAllowance] are the new composable
+/// breakdown (Verified Realtor Rewards, Part 11) computed server-side by
+/// `ensureUserEntitlements` in functions/listing-limit-functions.js — this
+/// class only parses what the server already wrote, never recomputes the
+/// formula itself (Part 10: the client must never decide listing allowance).
 class ListingEntitlements {
   ListingEntitlements({
     required this.userType,
@@ -8,13 +17,29 @@ class ListingEntitlements {
     required this.createdAt,
     required this.graceEndsAt,
     required this.activeListingLimit,
-  });
+    int? baseListings,
+    this.verifiedBonusListings = 0,
+    this.subscriptionBonusListings = 0,
+    int? totalListingAllowance,
+  })  : baseListings = baseListings ?? baseLimit(userType),
+        totalListingAllowance = totalListingAllowance ?? activeListingLimit;
 
   final ListingUserType userType;
   final ListingPlan plan;
   final DateTime createdAt;
   final DateTime graceEndsAt;
   final int activeListingLimit;
+
+  /// Composable breakdown (Part 11) — `baseListings + verifiedBonusListings
+  /// + subscriptionBonusListings == totalListingAllowance`, server-computed.
+  final int baseListings;
+  final int verifiedBonusListings;
+  final int subscriptionBonusListings;
+  final int totalListingAllowance;
+
+  /// True once verified (Part 1) — the realtor's listing allowance includes
+  /// a nonzero bonus from being a Verified Realtor.
+  bool get hasVerifiedBonus => verifiedBonusListings > 0;
 
   static int baseLimit(ListingUserType t) {
     switch (t) {
@@ -40,9 +65,11 @@ class ListingEntitlements {
     }
   }
 
-  /// Same rules as iOS `allowedActiveListingLimit(now:)`.
+  /// Same rules as iOS `allowedActiveListingLimit(now:)` /
+  /// `listing-limit-functions.js`'s `allowedLimit`: both `pro` and
+  /// `developer` plans bypass the standard cap entirely.
   int allowedActiveListingLimit(DateTime now) {
-    if (plan == ListingPlan.developer) {
+    if (plan == ListingPlan.developer || plan == ListingPlan.pro) {
       return 1 << 30;
     }
     if (now.isBefore(graceEndsAt)) {
@@ -54,6 +81,9 @@ class ListingEntitlements {
   String counterText(int activeCount, DateTime now) {
     if (plan == ListingPlan.developer) {
       return '$activeCount active listings (developer quota)';
+    }
+    if (plan == ListingPlan.pro) {
+      return '$activeCount active listings (unlimited)';
     }
     final limit = allowedActiveListingLimit(now);
     final word = limit == 1 ? 'listing' : 'listings';
@@ -96,12 +126,18 @@ class ListingEntitlements {
       baseLimitVal = rawLimit.toInt();
     }
 
+    int? asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : null);
+
     return ListingEntitlements(
       userType: userType,
       plan: plan,
       createdAt: createdAt,
       graceEndsAt: graceEndsAt,
       activeListingLimit: baseLimitVal,
+      baseListings: asInt(data['baseListings']),
+      verifiedBonusListings: asInt(data['verifiedBonusListings']) ?? 0,
+      subscriptionBonusListings: asInt(data['subscriptionBonusListings']) ?? 0,
+      totalListingAllowance: asInt(data['totalListingAllowance']),
     );
   }
 

@@ -169,6 +169,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         if (pid == null || pid.isEmpty) return;
         context.push('/property/$pid');
         return;
+      // Verified Realtor Rewards, Part 8/9 — same routing as
+      // PushNotificationService._routeFor, for the in-app notification list
+      // (both read/write the same `users/{uid}/in_app_notifications`
+      // subcollection, so a tap here should behave the same as a push tap).
+      case 'verification_approved':
+        context.go('/profile/verification-rewards?celebrate=true');
+        return;
+      case 'verification_rejected':
+      case 'verification_revoked':
+        context.go('/profile/identity-verification');
+        return;
       default:
         return;
     }

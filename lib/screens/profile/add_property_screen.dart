@@ -10,16 +10,22 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
+import '../../models/ai_capability.dart';
+import '../../models/ai_listing_draft.dart';
 import '../../models/listing_entitlements.dart';
 import '../../models/project_model.dart';
+import '../../providers/ai_feature_flags_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/user_role_provider.dart';
 import '../../repositories/project_repository.dart';
 import '../../repositories/property_repository.dart';
 import '../../repositories/user_profile_repository.dart';
 import '../../models/app_region.dart';
+import '../../services/ai/ai_listing_service.dart';
 import '../../services/image_processing_service.dart';
+import '../../services/search/location_search_service.dart';
 import '../../utils/listing_expiration_policy.dart';
+import '../../widgets/ai_listing_suggestion_sheet.dart';
 import 'listing_form_widgets.dart';
 
 /// Android parity with iOS `AddPropertyView`: section order, quotas, Stripe nudge,
@@ -285,8 +291,11 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
       }
 
       final ext = bytes != null ? 'jpg' : xFile.name.split('.').last;
+      // `property_images/` — the only property-photo path storage.rules
+      // grants (`properties/` has no rule and falls through to the
+      // deny-all catch-all, which would fail every upload here).
       final ref = storage.ref().child(
-            'properties/$propertyId/${DateTime.now().millisecondsSinceEpoch}_$i.$ext',
+            'property_images/$propertyId/${DateTime.now().millisecondsSinceEpoch}_$i.$ext',
           );
 
       // Upload with per-image progress
@@ -324,6 +333,43 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
       return _industrialFeatures.toList()..sort();
     }
     return _selectedAmenities.toList();
+  }
+
+  /// Snapshot of the form's current structured facts — same fields the
+  /// final save payload uses (`_save()` below), just read live so
+  /// "Generate with AI" reflects whatever the user has typed so far, even
+  /// though nothing has been saved to Firestore yet. No `propertyId` is
+  /// passed to the sheet: there's no document to attach a suggestion to
+  /// until the user actually saves the listing.
+  AiListingDraft _currentAiDraft() {
+    return AiListingDraft(
+      title: _titleCtrl.text,
+      propertyType: propertyTypes[_propertyTypeIndex],
+      listingType: listingTypes[_listingTypeIndex],
+      bedrooms: _hideBedBath ? null : _bedrooms,
+      bathrooms: _hideBedBath ? null : _bathrooms,
+      squareFootage: int.tryParse(_sqftCtrl.text.trim()),
+      city: _cityCtrl.text,
+      state: _stateCtrl.text,
+      price: double.tryParse(_priceCtrl.text.trim()),
+      currencyCode: _currencyCtrl.text,
+      yearBuilt: int.tryParse(_yearCtrl.text.trim()),
+      features: _featurePayload(),
+    );
+  }
+
+  Future<void> _generateAiDescription() async {
+    final suggestion = await showAiListingSuggestionSheet(
+      context: context,
+      service: context.read<AiListingService>(),
+      getDraft: _currentAiDraft,
+      // No propertyId — this listing doesn't exist in Firestore yet.
+    );
+    // Never applied automatically — only on explicit Accept, which is what
+    // makes showAiListingSuggestionSheet resolve with a non-null value.
+    if (suggestion != null && mounted) {
+      setState(() => _descCtrl.text = suggestion.description);
+    }
   }
 
   Future<void> _showErrorAlert(String message) async {
@@ -536,6 +582,14 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
         createdAt: createdAt,
       );
 
+      // Best-effort — never blocks the save. See
+      // LocationSearchService.geocodeForLocationPayload.
+      final geocoded = await LocationSearchService.geocodeForLocationPayload(
+        street: _streetCtrl.text.trim(),
+        city: _cityCtrl.text.trim(),
+        state: _stateCtrl.text.trim(),
+      );
+
       final payload = <String, dynamic>{
         'title': title,
         'description': _descCtrl.text.trim(),
@@ -553,6 +607,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
           'city': _cityCtrl.text.trim(),
           'state': _stateCtrl.text.trim(),
           'zipCode': _zipCtrl.text.trim(),
+          ...geocoded,
         },
         'features': _featurePayload(),
         'isFeatured': false,
@@ -691,6 +746,20 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
                             hint: 'Description',
                             maxLines: 3,
                           ),
+                          if (context
+                              .watch<AiFeatureFlagsProvider>()
+                              .isEnabled(AiCapability.listingGeneration))
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: _generateAiDescription,
+                                  icon: const Icon(Icons.auto_awesome, size: 18),
+                                  label: const Text('Generate with AI'),
+                                ),
+                              ),
+                            ),
                           // Price with $ prefix
                           ListingFormField(
                             controller: _priceCtrl,

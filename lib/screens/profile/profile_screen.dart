@@ -18,6 +18,7 @@ import '../../providers/user_role_provider.dart';
 import '../../repositories/user_profile_repository.dart';
 import '../../services/auth_service.dart';
 import '../../utils/responsive.dart';
+import '../../widgets/pp_widgets.dart';
 import 'profile_subscreen_widgets.dart';
 
 /// Mirrors [UserProfileView] on iOS: grouped background, header card (avatar +
@@ -160,6 +161,7 @@ class _ProfileScaffold extends StatelessWidget {
                       roleLabel: roleLabel,
                       savedCount: savedCount,
                       isLister: isLister,
+                      isVerified: doc?.isVerified ?? false,
                       listingsCount: stats?.listingsCount ?? 0,
                       developmentsCount: stats?.developmentsCount ?? 0,
                       staysCount: stats?.staysCount ?? 0,
@@ -277,6 +279,7 @@ class _ProfileHeaderCard extends StatelessWidget {
     required this.roleLabel,
     required this.savedCount,
     required this.isLister,
+    this.isVerified = false,
     required this.listingsCount,
     required this.developmentsCount,
     required this.staysCount,
@@ -288,6 +291,9 @@ class _ProfileHeaderCard extends StatelessWidget {
   final String roleLabel;
   final int? savedCount;
   final bool isLister;
+
+  /// Verified Realtor Rewards, Part 1 — profile screen badge.
+  final bool isVerified;
   final int listingsCount;
   final int developmentsCount;
   final int staysCount;
@@ -321,6 +327,10 @@ class _ProfileHeaderCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: ProfileTextStyles.profileName(context),
                 ),
+                if (isVerified) ...[
+                  const SizedBox(height: 2),
+                  const PPVerifiedBadge(),
+                ],
                 const SizedBox(height: 4),
                 Text(
                   roleLabel,

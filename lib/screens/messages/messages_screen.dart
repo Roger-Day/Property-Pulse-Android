@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +12,7 @@ import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
 import '../../providers/auth_provider.dart';
 import '../../repositories/property_repository.dart';
+import '../../services/messaging_service.dart';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -59,9 +62,15 @@ class _MessagesScreenState extends State<MessagesScreen>
   String _searchQuery = '';
   final _searchCtrl = TextEditingController();
 
+  // ── Cross-thread message search (mirrors iOS MessageCenterView) ──────────
+  Timer? _searchDebounce;
+  bool _searchingMessages = false;
+  List<MessageSearchResult> _messageResults = [];
+
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
@@ -70,15 +79,43 @@ class _MessagesScreenState extends State<MessagesScreen>
     await Future<void>.delayed(const Duration(milliseconds: 600));
   }
 
-  List<Map<String, dynamic>> _filter(
-      List<Map<String, dynamic>> threads, String me) {
-    final q = _searchQuery.toLowerCase().trim();
-    if (q.isEmpty) return threads;
-    return threads.where((t) {
-      final last = (t['lastMessage'] as String? ?? '').toLowerCase();
-      final prop = (t['propertyTitle'] as String? ?? '').toLowerCase();
-      return last.contains(q) || prop.contains(q);
-    }).toList();
+  void _onSearchChanged(String value) {
+    setState(() => _searchQuery = value);
+    _searchDebounce?.cancel();
+    if (value.trim().isEmpty) {
+      setState(() {
+        _messageResults = [];
+        _searchingMessages = false;
+      });
+      return;
+    }
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      _runMessageSearch(value);
+    });
+  }
+
+  Future<void> _runMessageSearch(String query) async {
+    final auth = context.read<AuthProvider>();
+    if (!auth.isSignedIn || auth.user == null) return;
+    setState(() => _searchingMessages = true);
+    try {
+      final results = await MessagingService.searchMessages(
+        db: FirebaseFirestore.instance,
+        currentUserId: auth.user!.uid,
+        query: query,
+      );
+      if (!mounted || query != _searchQuery) return;
+      setState(() {
+        _messageResults = results;
+        _searchingMessages = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _messageResults = [];
+        _searchingMessages = false;
+      });
+    }
   }
 
   Future<void> _deleteThread(String threadId, String me) async {
@@ -136,6 +173,7 @@ class _MessagesScreenState extends State<MessagesScreen>
 
     final me = auth.user!.uid;
     final repo = context.read<PropertyRepository>();
+    final isSearchActive = _searchQuery.trim().isNotEmpty;
 
     return Scaffold(
       backgroundColor: scheme.surface,
@@ -144,7 +182,7 @@ class _MessagesScreenState extends State<MessagesScreen>
           key: ValueKey(_refreshKey),
           stream: repo.watchConversations(me),
           builder: (context, snap) {
-            final threads = _filter(snap.data ?? [], me);
+            final threads = snap.data ?? [];
             final hasError = snap.hasError;
             final loading = !snap.hasData && !hasError;
 
@@ -165,24 +203,29 @@ class _MessagesScreenState extends State<MessagesScreen>
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                       child: _SearchField(
                         controller: _searchCtrl,
-                        onChanged: (v) => setState(() => _searchQuery = v),
+                        onChanged: _onSearchChanged,
                       ),
                     ),
                   ),
 
                   // ── Body ─────────────────────────────────────────────
-                  if (hasError)
+                  if (isSearchActive)
+                    SliverFillRemaining(
+                      child: _MessageSearchResultsView(
+                        loading: _searchingMessages,
+                        results: _messageResults,
+                        query: _searchQuery,
+                        currentUserId: me,
+                      ),
+                    )
+                  else if (hasError)
                     SliverFillRemaining(
                       child: _ErrorState(snap.error.toString()),
                     )
                   else if (loading)
                     const SliverFillRemaining(child: _Skeleton())
                   else if (threads.isEmpty)
-                    SliverFillRemaining(
-                      child: _searchQuery.isNotEmpty
-                          ? _NoResults(_searchQuery)
-                          : const _Empty(),
-                    )
+                    const SliverFillRemaining(child: _Empty())
                   else
                     SliverList(
                       delegate: SliverChildBuilderDelegate(
@@ -332,6 +375,156 @@ class _SearchField extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cross-thread message search results — mirrors iOS
+// MessageCenterView.searchResultsView (loading → empty → tappable list)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _MessageSearchResultsView extends StatelessWidget {
+  const _MessageSearchResultsView({
+    required this.loading,
+    required this.results,
+    required this.query,
+    required this.currentUserId,
+  });
+
+  final bool loading;
+  final List<MessageSearchResult> results;
+  final String query;
+  final String currentUserId;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading && results.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (results.isEmpty) {
+      return _NoResults(query);
+    }
+    return ListView.separated(
+      padding: EdgeInsets.zero,
+      itemCount: results.length,
+      separatorBuilder: (_, __) => const Divider(height: 1, indent: 80),
+      itemBuilder: (context, i) => _SearchResultTile(
+        result: results[i],
+        query: query,
+        currentUserId: currentUserId,
+      ),
+    );
+  }
+}
+
+class _SearchResultTile extends StatefulWidget {
+  const _SearchResultTile({
+    required this.result,
+    required this.query,
+    required this.currentUserId,
+  });
+
+  final MessageSearchResult result;
+  final String query;
+  final String currentUserId;
+
+  @override
+  State<_SearchResultTile> createState() => _SearchResultTileState();
+}
+
+class _SearchResultTileState extends State<_SearchResultTile> {
+  String _name = '';
+  String? _photo;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final uid = widget.result.otherParticipantId;
+    if (uid.isEmpty) {
+      if (mounted) setState(() => _name = 'Unknown');
+      return;
+    }
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('user_public')
+          .doc(uid)
+          .get();
+      if (!mounted) return;
+      final d = doc.data() ?? {};
+      setState(() {
+        _name = d['displayName'] as String? ??
+            d['name'] as String? ??
+            d['fullName'] as String? ??
+            'User';
+        _photo = d['photoURL'] as String? ?? d['photoUrl'] as String?;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _name = 'User');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final r = widget.result;
+    return InkWell(
+      onTap: () =>
+          context.push('/messages/thread/${r.conversationId}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _Avatar(name: _name, photoUrl: _photo),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _name.isEmpty ? '…' : _name,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _formatTime(r.createdAt),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  _Highlight(
+                    text: r.text,
+                    query: widget.query,
+                    maxLines: 2,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Thread tile — mirrors iOS ConversationRowView
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -417,9 +610,7 @@ class _ThreadTileState extends State<_ThreadTile> {
     final lastAt = t['lastMessageAt'];
     final propertyTitle = t['propertyTitle'] as String? ?? '';
     final hasProperty = propertyTitle.isNotEmpty;
-    final unread =
-        (t['unreadCounts'] as Map<String, dynamic>?)?[me] as int? ?? 0;
-    final isUnread = unread > 0;
+    final isUnread = MessagingService.isConversationUnread(t, me);
 
     return InkWell(
       onTap: () {
@@ -529,7 +720,7 @@ class _ThreadTileState extends State<_ThreadTile> {
                       ),
                       if (isUnread) ...[
                         const SizedBox(width: 8),
-                        _UnreadBadge(count: unread),
+                        const _UnreadDot(),
                       ],
                     ],
                   ),
@@ -613,30 +804,22 @@ class _Initials extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unread badge — pill shape, matches iOS
+// Unread dot — iOS only tracks a 0/1 unread flag per conversation (see
+// MessagingService.isConversationUnread), not a message count, so there is
+// no real number to show here.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _UnreadBadge extends StatelessWidget {
-  const _UnreadBadge({required this.count});
-  final int count;
+class _UnreadDot extends StatelessWidget {
+  const _UnreadDot();
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      width: 10,
+      height: 10,
       decoration: const BoxDecoration(
         color: AppColors.primary,
-        borderRadius: BorderRadius.all(Radius.circular(10)),
-      ),
-      child: Text(
-        count > 99 ? '99+' : '$count',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-        ),
-        textAlign: TextAlign.center,
+        shape: BoxShape.circle,
       ),
     );
   }

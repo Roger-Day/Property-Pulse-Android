@@ -1247,6 +1247,12 @@ class _HomeCardOverlay extends StatelessWidget {
       padding: EdgeInsets.all(compact ? 8 : 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
+        // Pins the status badge to the left edge and the icon stack to the
+        // right edge regardless of how wide the badge's own content is —
+        // without this, the icon stack just sat directly after the badge
+        // (wherever that happened to end) instead of at the top-right
+        // corner like iOS's overlay.
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Flexible(
             child: Row(
@@ -1296,7 +1302,6 @@ class _HomeCardOverlay extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 8),
           // Vertical action stack — mirrors iOS heart / share / bookmark.
           Column(
             mainAxisSize: MainAxisSize.min,
@@ -1306,19 +1311,25 @@ class _HomeCardOverlay extends StatelessWidget {
                 color: canLikeAndSave
                     ? (isLiked ? Colors.redAccent : Colors.white)
                     : Colors.white.withValues(alpha: 0.35),
+                label: isLiked ? 'Remove like' : 'Like property',
                 onTap: canLikeAndSave
                     ? () =>
                         context.read<LikedProvider>().toggle(property)
                     : null,
               ),
               const SizedBox(height: 6),
-              _OverlayIconButton(icon: Icons.share_outlined, onTap: onShare),
+              _OverlayIconButton(
+                icon: Icons.share_outlined,
+                label: 'Share property',
+                onTap: onShare,
+              ),
               const SizedBox(height: 6),
               _OverlayIconButton(
                 icon: isSaved ? Icons.bookmark : Icons.bookmark_border,
                 color: canLikeAndSave
                     ? (isSaved ? AppColors.primary : Colors.white)
                     : Colors.white.withValues(alpha: 0.35),
+                label: isSaved ? 'Remove from saved' : 'Save property',
                 onTap: canLikeAndSave
                     ? () =>
                         context.read<SavedProvider>().toggle(property)
@@ -1628,6 +1639,7 @@ class _OverlayIconButton extends StatelessWidget {
   const _OverlayIconButton({
     required this.icon,
     required this.onTap,
+    required this.label,
     this.color,
   });
 
@@ -1635,24 +1647,31 @@ class _OverlayIconButton extends StatelessWidget {
   final VoidCallback? onTap;
   /// Icon tint — defaults to white (iOS overlay buttons are white-on-dark).
   final Color? color;
+  /// Accessible name — an icon-only button otherwise has none.
+  final String label;
 
   @override
   Widget build(BuildContext context) {
     // iOS: 34pt circle, black 0.40 fill over ultraThinMaterial, white icon.
-    return Material(
-      color: Colors.black.withValues(alpha: 0.40),
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        splashColor: Colors.white.withValues(alpha: 0.15),
-        onTap: onTap,
-        child: SizedBox(
-          width: 34,
-          height: 34,
-          child: Icon(
-            icon,
-            size: 16,
-            color: color ?? Colors.white,
+    return Semantics(
+      label: label,
+      button: true,
+      enabled: onTap != null,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.40),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          splashColor: Colors.white.withValues(alpha: 0.15),
+          onTap: onTap,
+          child: SizedBox(
+            width: 34,
+            height: 34,
+            child: Icon(
+              icon,
+              size: 16,
+              color: color ?? Colors.white,
+            ),
           ),
         ),
       ),

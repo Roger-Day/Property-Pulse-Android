@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart' show CupertinoPage;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/onboarding_provider.dart';
@@ -9,6 +10,7 @@ import '../screens/auth/forgot_password_screen.dart';
 import '../screens/auth/phone_sign_in_screen.dart';
 import '../screens/auth/sign_in_screen.dart';
 import '../screens/onboarding/onboarding_screen.dart';
+import '../screens/onboarding/required_role_screen.dart';
 import '../screens/onboarding/welcome_screen.dart';
 import '../screens/explore/property_detail_screen.dart';
 import '../screens/explore/explore_screen.dart';
@@ -42,6 +44,7 @@ import '../screens/profile/add_property_screen.dart';
 import '../screens/profile/boost_listing_screen.dart';
 import '../screens/profile/edit_property_screen.dart';
 import '../screens/profile/my_listings_screen.dart';
+import '../screens/profile/realtor_workspace_screen.dart';
 import '../models/host_booking_row.dart';
 import '../models/property_model.dart';
 import '../screens/profile/guest_stay_detail_screen.dart';
@@ -64,6 +67,14 @@ import '../screens/profile/data_export_screen.dart';
 import '../screens/profile/about_property_pulse_screen.dart';
 import '../screens/profile/support_screen.dart';
 import '../screens/profile/viewing_history_screen.dart';
+import '../features/pulse_finder/controllers/pulse_finder_conversation_controller.dart';
+import '../features/pulse_finder/screens/pulse_finder_history_screen.dart';
+import '../features/pulse_finder/screens/pulse_finder_screen.dart';
+import '../repositories/project_repository.dart';
+import '../repositories/property_repository.dart';
+import '../repositories/pulse_finder_session_repository.dart';
+import '../services/ai/ai_search_service.dart';
+import '../features/pulse_finder/services/pulse_finder_ai_service.dart';
 import '../screens/saved/saved_screen.dart';
 import '../screens/splash_screen.dart';
 import '../screens/admin/admin_dashboard_screen.dart';
@@ -106,6 +117,21 @@ GoRouter createAppRouter(
         if (loc == '/auth' || loc.startsWith('/auth/')) return null;
         // Everything else redirects to the animated welcome landing.
         return '/welcome';
+      }
+
+      // Mandatory, one-time-per-device role picker — mirrors iOS
+      // `checkRequiredOnboarding()` (authenticated, not guest, not admin,
+      // never selected on this device). Waits on both `ready` flags so a
+      // real admin/guest isn't bounced here for a frame before their status
+      // resolves, same guard style as the /admin check below.
+      if (authProvider.isSignedIn &&
+          !authProvider.isAnonymous &&
+          onboardingProvider.ready &&
+          userRoleProvider.adminRoleResolved &&
+          !userRoleProvider.isAdmin &&
+          !onboardingProvider.requiredRoleSelected &&
+          loc != '/required-role') {
+        return '/required-role';
       }
 
       if (loc.startsWith('/admin')) {
@@ -162,6 +188,11 @@ GoRouter createAppRouter(
         builder: (context, state) => const OnboardingScreen(),
       ),
       GoRoute(
+        path: '/required-role',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const RequiredRoleScreen(),
+      ),
+      GoRoute(
         path: '/explore',
         redirect: (_, __) => '/search',
       ),
@@ -169,6 +200,51 @@ GoRouter createAppRouter(
         path: '/saved',
         parentNavigatorKey: rootNavigatorKey,
         builder: (context, state) => const SavedScreen(),
+      ),
+      // Standalone map view for Home's "Map" quick-action — pushed above the
+      // shell (not `/map`, the Map tab's own branch route) so it doesn't
+      // switch `StatefulNavigationShell.currentIndex`. For roles whose
+      // bottom-nav middle slot isn't Map (realtor/owner/developer/host),
+      // `context.go('/map')` would navigate to the Map branch while the
+      // bottom nav kept highlighting that slot's own icon (Add/Manage/etc)
+      // — a highlighted-wrong-tab desync with no iOS equivalent to match.
+      GoRoute(
+        path: '/map-view',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const MapScreen(),
+      ),
+      // Pulse Finder (Phase 3) — a dedicated, top-level screen (not nested
+      // inside Search), reached via Home's quick action and a Search entry
+      // card. The conversation controller is created HERE, route-scoped,
+      // not in main.dart — popping this route disposes it and its whole
+      // conversation history, which is the entire mechanism behind
+      // "memory exists only within the current session".
+      GoRoute(
+        path: '/pulse-finder',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => ChangeNotifierProvider<PulseFinderConversationController>(
+          create: (ctx) => PulseFinderConversationController(
+            ai: ctx.read<PulseFinderAiService>(),
+            search: ctx.read<AiSearchService>(),
+            repo: ctx.read<PropertyRepository>(),
+            projectRepo: ctx.read<ProjectRepository>(),
+            // Phase 4 — consultation history. Signed-out users simply get
+            // an unsaved conversation (userId null → persistence skipped).
+            sessionRepo: ctx.read<PulseFinderSessionRepository>(),
+            userId: ctx.read<AuthProvider>().user?.uid,
+          ),
+          // Phase 4 — `?sessionId=` resumes a saved consultation instead of
+          // starting a new one (see PulseFinderScreen.initState).
+          child: PulseFinderScreen(
+            resumeSessionId: state.uri.queryParameters['sessionId'],
+          ),
+        ),
+      ),
+      // Phase 4 — saved consultation history.
+      GoRoute(
+        path: '/pulse-finder/history',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const PulseFinderHistoryScreen(),
       ),
       GoRoute(
         path: '/notifications',
@@ -392,6 +468,18 @@ GoRouter createAppRouter(
                       ),
                     ),
                   ),
+                  // The bottom nav's middle "Manage" slot for realtors/
+                  // owners/admins who already manage a short-stay listing —
+                  // mirrors iOS RealtorWorkspaceView. See home_shell.dart.
+                  GoRoute(
+                    path: 'manage-workspace',
+                    pageBuilder: (context, state) => _profileCupertinoPage(
+                      state,
+                      RealtorWorkspaceScreen(
+                        userId: authProvider.user!.uid,
+                      ),
+                    ),
+                  ),
                   // Nested (not top-level) so the bottom nav bar stays visible —
                   // matches iOS CreateListingEntryView, which has no
                   // .toolbar(.hidden, for: .tabBar) and is pushed within the
@@ -488,6 +576,22 @@ GoRouter createAppRouter(
                       state,
                       VerificationDetailsScreen(
                         userId: authProvider.user!.uid,
+                      ),
+                    ),
+                  ),
+                  GoRoute(
+                    // Verified Realtor Rewards, Part 7/8 — deep-linked from
+                    // the "verification_approved" push notification (see
+                    // PushNotificationService._routeFor) with
+                    // ?celebrate=true so the one-time celebration animation
+                    // plays on arrival.
+                    path: 'verification-rewards',
+                    pageBuilder: (context, state) => _profileCupertinoPage(
+                      state,
+                      VerificationRewardsScreen(
+                        userId: authProvider.user!.uid,
+                        celebrate:
+                            state.uri.queryParameters['celebrate'] == 'true',
                       ),
                     ),
                   ),

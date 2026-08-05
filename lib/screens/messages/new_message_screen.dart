@@ -71,6 +71,7 @@ class _NewMessageScreenState extends State<NewMessageScreen> {
           title: const Text('New message'),
           leading: IconButton(
             icon: const Icon(Icons.close),
+            tooltip: 'Close',
             onPressed: () => context.pop(),
           ),
         ),
@@ -95,6 +96,7 @@ class _NewMessageScreenState extends State<NewMessageScreen> {
         title: const Text('New message'),
         leading: IconButton(
           icon: const Icon(Icons.close),
+          tooltip: 'Close',
           onPressed: () => context.pop(),
         ),
       ),

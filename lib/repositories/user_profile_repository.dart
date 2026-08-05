@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../constants/app_constants.dart';
@@ -11,13 +12,13 @@ import '../services/guest_stays_privacy_store.dart';
 import '../models/notification_model.dart';
 import '../models/property_model.dart';
 import '../models/project_interest_row.dart';
+import '../models/realtor_trust_indicators.dart';
 import '../models/review_model.dart';
 import '../models/saved_search_model.dart';
 import '../models/public_profile_summary.dart';
 import '../models/listing_entitlements.dart';
 import '../models/user_data_export_snapshot.dart';
 import '../models/user_profile_doc.dart';
-import '../services/cancellation_service.dart';
 
 /// Result of watching both `users/{uid}` and `user_public/{uid}` for admin (iOS parity).
 class UserAdminRoleState {
@@ -50,9 +51,30 @@ class UserProfileStats {
 }
 
 class UserProfileRepository {
-  UserProfileRepository(this._db);
+  UserProfileRepository(this._db, {FirebaseFunctions? functions})
+      : _fns = functions ?? FirebaseFunctions.instanceFor(region: 'us-central1');
 
   final FirebaseFirestore _db;
+  final FirebaseFunctions _fns;
+
+  /// Verified Realtor Rewards, Part 6 — computed fresh server-side on every
+  /// call (see functions/realtor-trust-indicators-functions.js's doc
+  /// comment for why this isn't a persisted rollup). Returns null on any
+  /// failure so the UI can simply hide the trust section rather than error.
+  Future<RealtorTrustIndicators?> fetchRealtorTrustIndicators(
+    String userId,
+  ) async {
+    if (userId.isEmpty) return null;
+    try {
+      final callable = _fns.httpsCallable('getRealtorTrustIndicators');
+      final result = await callable.call<dynamic>({'userId': userId});
+      final data = result.data;
+      if (data is! Map) return null;
+      return RealtorTrustIndicators.fromMap(Map<String, dynamic>.from(data));
+    } catch (_) {
+      return null;
+    }
+  }
 
   Stream<UserProfileDoc?> watchUserProfile(String userId) {
     return _db
@@ -159,13 +181,26 @@ class UserProfileRepository {
     final email = authUser.email?.trim() ?? '';
     final photoUrl = authUser.photoURL?.trim() ?? '';
 
+    // `createdAt` must only ever be set once. merge:true still overwrites a
+    // key that IS present in the payload — since this function runs on
+    // every auth-state change (not just first registration; see
+    // UserRoleProvider._onAuthChanged), unconditionally including
+    // FieldValue.serverTimestamp() here was silently resetting every
+    // returning user's join date to "now" on each sign-in. Mirrors the
+    // guard already used server-side (ensureUserEntitlements: `if
+    // (userData?.createdAt == null)`) and on iOS (UserViewModel: `if
+    // (!userDoc.exists)`). "Years on Property Pulse" (Verified Realtor
+    // Rewards, Part 6) depends on this being correct.
+    final existingSnap = await usersRef.get();
+    final hasCreatedAt = existingSnap.data()?['createdAt'] != null;
+
     // Only seed fields that are not yet present (merge: true keeps existing data).
     final userPayload = <String, dynamic>{
       'uid': uid,
       if (email.isNotEmpty) 'email': email,
       if (displayName.isNotEmpty) 'fullName': displayName,
       if (photoUrl.isNotEmpty) 'profileImageURL': photoUrl,
-      'createdAt': FieldValue.serverTimestamp(),
+      if (!hasCreatedAt) 'createdAt': FieldValue.serverTimestamp(),
     };
     final publicPayload = <String, dynamic>{
       'uid': uid,
@@ -412,36 +447,57 @@ class UserProfileRepository {
   }
 
   /// Mirrors iOS `PropertyViewModel.countActiveListingsForOwner` (owner uid,
-  /// active statuses, not deleted).
+  /// active statuses, not deleted). Airbnb/short-stay listings are excluded —
+  /// they have their own separate Host Dashboard quota — so this can't be a
+  /// plain `.count()` aggregate; it fetches docs and filters client-side,
+  /// same as iOS.
   Future<int> countActiveListingsForOwner(String userId) async {
     if (userId.isEmpty) return 0;
-    Future<int?> agg(String ownerField) async {
+    const activeStatuses = {'available', 'pending', 'active'};
+    final seenIds = <String>{};
+
+    Future<void> collect(String ownerField) async {
       try {
-        final q = await _db
+        final snap = await _db
             .collection(AppConstants.propertiesCollection)
             .where(ownerField, isEqualTo: userId)
             .where('deleted', isEqualTo: false)
-            .where('status', whereIn: ['available', 'pending', 'active'])
-            .count()
+            .where('status', whereIn: activeStatuses.toList())
             .get();
-        return q.count;
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          final propertyType =
+              (data['propertyType'] as String? ?? '').toLowerCase().trim();
+          final listingType = ((data['listingType'] as String?) ??
+                  (data['listing_type'] as String?) ??
+                  '')
+              .toLowerCase()
+              .trim();
+          // Deliberately no `airbnbInfo` check here, matching iOS's
+          // PropertyViewModel+Monetization.swift exactly — some ordinary
+          // for-sale/for-rent listings still carry a stale `airbnbInfo` map
+          // from older creation flows/migrations, and treating that as
+          // authoritative would wrongly exclude a real listing from its
+          // owner's active-listing count.
+          if (propertyType == 'airbnb' ||
+              listingType == 'shortstay' ||
+              listingType == 'short_stay') {
+            continue; // handled by the Host Dashboard quota, not here
+          }
+          seenIds.add(doc.id);
+        }
       } catch (_) {
-        return null;
+        // Leave unset — the field may not exist on this deployment's docs.
       }
     }
 
-    final a = await agg('ownerId');
-    if (a != null) return a;
-    final b = await agg('owner_id');
-    if (b != null) return b;
+    await Future.wait([
+      collect('ownerId'),
+      collect('owner_id'),
+      collect('realtorId'),
+    ]);
 
-    final list = await getMyListings(userId);
-    const ok = {'available', 'pending', 'active'};
-    return list
-        .where((p) =>
-            p.ownerId == userId &&
-            ok.contains(p.status.toLowerCase().trim()))
-        .length;
+    return seenIds.length;
   }
 
   /// Mirrors iOS `EntitlementsViewModel.updateUserType` → realtor tier.
@@ -462,6 +518,43 @@ class UserProfileRepository {
     }, SetOptions(merge: true));
   }
 
+  /// First-time mandatory role assignment — mirrors iOS
+  /// `RequiredUserTypeOnboardingView.select`/`selectAirbnbHost`. Unlike
+  /// `RoleSwitchService.switchRole` (used for an *established* user
+  /// changing roles later, with a 7-day cooldown and blocking rules), this
+  /// is the very first role a new account gets: no cooldown, and it never
+  /// stamps `previousRole`, so a correction moments later via the real role
+  /// switcher isn't blocked by "can't return to your previous role".
+  Future<void> setInitialRole({
+    required String userId,
+    required String role, // 'seeker' | 'owner' | 'realtor' | 'developer' | 'airbnbHost'
+  }) async {
+    // The entitlements enum has no dedicated Airbnb-host tier — mirrors
+    // iOS's "nearest equivalent with listing capability" fallback to owner.
+    final entitlementsType = role == 'airbnbHost'
+        ? ListingUserType.owner
+        : ListingUserType.values.firstWhere(
+            (t) => t.name == role,
+            orElse: () => ListingUserType.seeker,
+          );
+
+    final batch = _db.batch();
+    final userRef = _db.collection(AppConstants.usersCollection).doc(userId);
+    final publicRef =
+        _db.collection(AppConstants.userPublicCollection).doc(userId);
+    batch.set(userRef, {
+      'role': role,
+      'userType': entitlementsType.name,
+      'activeListingLimit': ListingEntitlements.baseLimit(entitlementsType),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.set(publicRef, {
+      'role': role,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    await batch.commit();
+  }
+
   Future<UserProfileStats> getProfileStats(String userId) async {
     final developmentsCountFuture = _getDevelopmentsCount(userId);
     final staysCountFuture = _getStaysCount(userId);
@@ -475,7 +568,7 @@ class UserProfileRepository {
       developmentsCount: developmentsCount,
       staysCount: staysCount,
       listingsCount: listings.length,
-      hasManagedAirbnbListing: listings.any((p) => p.isAirbnbListing),
+      hasManagedAirbnbListing: listings.any((p) => p.isShortStayHostListing),
     );
   }
 
@@ -579,43 +672,16 @@ class UserProfileRepository {
   }
 
   Future<List<PropertyModel>> getMyListings(String userId) async {
-    Future<List<PropertyModel>> loadWithDeletedFilter() async {
+    /// Runs one owner-field fan-out (with the `deleted` filter) and merges
+    /// the results by document id.
+    Future<List<PropertyModel>> queryFields(List<String> fields) async {
       final snaps = await Future.wait<QuerySnapshot<Map<String, dynamic>>>([
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('realtorId', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('ownerId', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('realtor_id', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('owner_id', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('hostId', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('hostUserId', isEqualTo: userId)
-          .get(),
-      _db
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('host_user_id', isEqualTo: userId)
-          .get(),
+        for (final field in fields)
+          _db
+              .collection(AppConstants.propertiesCollection)
+              .where('deleted', isEqualTo: false)
+              .where(field, isEqualTo: userId)
+              .get(),
       ]);
       final byId = <String, PropertyModel>{};
       for (final snap in snaps) {
@@ -630,8 +696,21 @@ class UserProfileRepository {
         ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     }
 
-    final primary = await loadWithDeletedFilter();
+    // Two-tier fan-out instead of one flat 7-field query: every property
+    // created by the current write path (PropertyRepository.addProperty)
+    // sets `realtorId`/`ownerId`/`hostId` together, so those 3 canonical
+    // camelCase fields alone satisfy the overwhelming majority of accounts.
+    // The remaining 4 snake_case/legacy field names are only ever
+    // populated on pre-migration documents, so they're checked as a
+    // second tier and only when the first tier comes back empty — cutting
+    // typical-case Firestore reads for this call from 7 to 3.
+    final primary = await queryFields(const ['realtorId', 'ownerId', 'hostId']);
     if (primary.isNotEmpty) return primary;
+
+    final legacy = await queryFields(
+      const ['realtor_id', 'owner_id', 'hostUserId', 'host_user_id'],
+    );
+    if (legacy.isNotEmpty) return legacy;
 
     // Legacy fallback: older docs may not have `deleted`, so broad-read + client filter.
     final fallbackSnaps = await Future.wait<QuerySnapshot<Map<String, dynamic>>>([
@@ -696,16 +775,6 @@ class UserProfileRepository {
       return bi.compareTo(ai);
     });
     return rows;
-  }
-
-  /// Guest cancels their reservation securely via the backend Cloud Function.
-  Future<void> cancelGuestBooking(HostBookingRow row) async {
-    final cancellationService = CancellationService();
-    await cancellationService.cancelBooking(
-      bookingId: row.id,
-      reason: 'guest_plans_changed',
-      role: 'guest',
-    );
   }
 
   Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fetchHostBookingDocs(
@@ -1039,6 +1108,30 @@ class UserProfileRepository {
     });
   }
 
+  /// Reports a piece of content (review, message, user) for admin review —
+  /// mirrors iOS `ModerationService.submitReport`, writing to the same
+  /// `moderation_reports` collection the admin moderation queue already
+  /// reads (`AdminRepository.watchModerationReports`). [targetType] is one
+  /// of 'review' | 'message' | 'user' (kept a plain string, same as iOS's
+  /// wire format, rather than introducing a new enum for a single write path).
+  Future<void> submitModerationReport({
+    required String reporterId,
+    required String targetType,
+    required String targetId,
+    required String reason,
+    String details = '',
+  }) async {
+    await _db.collection(AppConstants.moderationReportsCollection).add({
+      'reporterId': reporterId,
+      'targetType': targetType,
+      'targetId': targetId,
+      'reason': reason,
+      'details': details,
+      'status': 'open',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Reviews
   // ─────────────────────────────────────────────────────────────────────────
@@ -1059,6 +1152,51 @@ class UserProfileRepository {
     await _db
         .collection(AppConstants.reviewsCollection)
         .add(review.toFirestore());
+    await _updatePropertyRatingStats(review.propertyId);
+  }
+
+  /// Recomputes `averageRating`/`totalReviews`/`lastReviewDate` on the
+  /// property document after a review is added — mirrors iOS
+  /// `ReviewViewModel.updatePropertyRating`/`updatePropertyReviewStats`,
+  /// which keep the star rating shown on property cards/search/home in sync
+  /// with the property's actual reviews. Best-effort: a failure here must
+  /// not surface as a failure of the review submission itself.
+  Future<void> _updatePropertyRatingStats(String propertyId) async {
+    try {
+      final reviewsSnap = await _db
+          .collection(AppConstants.reviewsCollection)
+          .where('propertyId', isEqualTo: propertyId)
+          .get();
+      if (reviewsSnap.docs.isEmpty) return;
+
+      var ratingSum = 0;
+      DateTime? lastReviewDate;
+      for (final doc in reviewsSnap.docs) {
+        final data = doc.data();
+        ratingSum += (data['rating'] as num?)?.toInt() ?? 0;
+        final date = data['date'];
+        if (date is Timestamp) {
+          final d = date.toDate();
+          if (lastReviewDate == null || d.isAfter(lastReviewDate)) {
+            lastReviewDate = d;
+          }
+        }
+      }
+      final averageRating = ratingSum / reviewsSnap.docs.length;
+
+      await _db
+          .collection(AppConstants.propertiesCollection)
+          .doc(propertyId)
+          .update({
+        'averageRating': averageRating,
+        'totalReviews': reviewsSnap.docs.length,
+        if (lastReviewDate != null)
+          'lastReviewDate': Timestamp.fromDate(lastReviewDate),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      // Best-effort — see doc comment above.
+    }
   }
 
   // ── Data export (iOS `UserProfileService.exportUserData`) ─────────────────

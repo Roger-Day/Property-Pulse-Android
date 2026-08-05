@@ -36,6 +36,33 @@ class _SavedScreenState extends State<SavedScreen>
     await Future<void>.delayed(const Duration(milliseconds: 600));
   }
 
+  Future<void> _confirmClearAll(
+      BuildContext context, SavedProvider saved) async {
+    final count = saved.savedIds.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear all saved listings?'),
+        content: Text(
+            'This removes all $count saved listing${count == 1 ? '' : 's'}. This cannot be undone.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      HapticFeedback.mediumImpact();
+      await saved.clearAll();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context); // required by AutomaticKeepAliveClientMixin
@@ -62,7 +89,7 @@ class _SavedScreenState extends State<SavedScreen>
               final count = saved.savedIds.length;
               if (count == 0) return const SizedBox.shrink();
               return Padding(
-                padding: const EdgeInsets.only(right: 16),
+                padding: const EdgeInsets.only(right: 8),
                 child: Center(
                   child: Container(
                     padding:
@@ -81,6 +108,15 @@ class _SavedScreenState extends State<SavedScreen>
                     ),
                   ),
                 ),
+              );
+            },
+          ),
+          Consumer<SavedProvider>(
+            builder: (_, saved, __) {
+              if (saved.savedIds.isEmpty) return const SizedBox.shrink();
+              return TextButton(
+                onPressed: () => _confirmClearAll(context, saved),
+                child: const Text('Clear all'),
               );
             },
           ),
@@ -112,11 +148,10 @@ class _SavedScreenState extends State<SavedScreen>
               final screenWidth = MediaQuery.sizeOf(context).width;
               final tablet = screenWidth >= 700;
               final cardMaxWidth = tablet ? 760.0 : 640.0;
-              return RefreshIndicator(
-                onRefresh: _onRefresh,
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  children: [
+              // Saved-property counts can grow into the hundreds for a
+              // heavy user — flatten into one list up front so the view
+              // below can be lazy instead of eagerly building every card.
+              final items = <Widget>[
                     // ── Available listings ─────────────────────────────
                     ...available.asMap().entries.map((e) {
                       final property = e.value;
@@ -215,7 +250,13 @@ class _SavedScreenState extends State<SavedScreen>
                             ),
                           )),
                     ],
-                  ],
+                  ];
+              return RefreshIndicator(
+                onRefresh: _onRefresh,
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  itemCount: items.length,
+                  itemBuilder: (context, i) => items[i],
                 ),
               );
             },
@@ -294,6 +335,22 @@ class _EmptyState extends StatelessWidget {
                   .textTheme
                   .bodyMedium
                   ?.copyWith(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => context.go('/home'),
+                child: const Text('Browse Properties'),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () => context.go('/search'),
+                child: const Text('Search Properties'),
+              ),
             ),
           ],
         ),

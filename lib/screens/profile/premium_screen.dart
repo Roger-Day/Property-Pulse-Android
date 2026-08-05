@@ -184,6 +184,17 @@ class _PremiumScreenState extends State<PremiumScreen> {
                         ),
                       ),
                     ),
+                  if (billing.pendingApprovalMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        billing.pendingApprovalMessage!,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
                   const SizedBox(height: 40),
                 ]),
               ),

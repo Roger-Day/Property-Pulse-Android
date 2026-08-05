@@ -12,8 +12,15 @@ class OnboardingProvider extends ChangeNotifier {
   String _state = 'notStarted';
   String _userType = 'unknown';
   String _displayName = '';
+  bool _requiredRoleSelected = false;
 
   bool get ready => _ready;
+
+  /// Mirrors iOS `UserTypeSelectionStore.selectedUserType == nil` — a
+  /// device-local flag (not account-scoped, matching iOS) gating the
+  /// mandatory post-signup role picker. True once the user has picked a
+  /// role on THIS device, regardless of what role ends up on their account.
+  bool get requiredRoleSelected => _requiredRoleSelected;
 
   /// Mirrors iOS `shouldShowOnboardingFlow()`.
   bool get shouldShowOnboardingFlow {
@@ -40,7 +47,17 @@ class OnboardingProvider extends ChangeNotifier {
     _state = prefs.getString('onboardingState') ?? 'notStarted';
     _userType = prefs.getString('userType') ?? 'unknown';
     _displayName = prefs.getString('displayName') ?? '';
+    _requiredRoleSelected = prefs.getBool('requiredRoleSelected') ?? false;
     _ready = true;
+    notifyListeners();
+  }
+
+  /// Marks the mandatory role picker as done for this device — mirrors iOS
+  /// setting `UserTypeSelectionStore.selectedUserType`.
+  Future<void> markRequiredRoleSelected() async {
+    _requiredRoleSelected = true;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('requiredRoleSelected', true);
     notifyListeners();
   }
 

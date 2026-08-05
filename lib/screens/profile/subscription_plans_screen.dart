@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../services/in_app_billing_service.dart';
 
 /// Context enum mirroring iOS `SubscriptionPlansContext`.
 enum SubscriptionPlansContext {
@@ -70,6 +73,16 @@ enum SubscriptionPlansContext {
     }
   }
 
+  /// Role passed to [InAppBillingService.effectiveTierProductId] so a
+  /// realtor holding a legacy general-Premium purchase is correctly shown
+  /// as already on Realtor Pro (iOS grandfathering rule).
+  String? get roleForEntitlements =>
+      this == SubscriptionPlansContext.realtor ? 'realtor' : null;
+
+  /// Real store product ids and live/coming-soon status match iOS exactly
+  /// (`SubscriptionPlansView` — only General, Developer Pro, Realtor Pro,
+  /// and Airbnb Host Pro have App Store Connect / Play Console products
+  /// configured today; the rest are intentionally `comingSoon`, same as iOS).
   List<_PlanOption> get plans {
     switch (this) {
       case SubscriptionPlansContext.general:
@@ -77,7 +90,7 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Monthly Premium',
             price: '\$9.99/mo',
-            productId: 'premium_monthly',
+            realProductId: InAppBillingService.monthlyProductId,
             features: [
               'Unlimited saved searches',
               'Priority alerts for new listings',
@@ -88,7 +101,7 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Annual Premium',
             price: '\$79.99/yr',
-            productId: 'premium_yearly',
+            realProductId: InAppBillingService.yearlyProductId,
             badge: 'Save 33%',
             features: [
               'All monthly features',
@@ -103,9 +116,9 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Developer Pro',
             price: '\$39/mo',
-            productId: 'developer_pro_monthly',
+            realProductId: InAppBillingService.developerProMonthlyId,
             features: [
-              'Up to 10 active developments',
+              'Up to 5 active developments',
               'Full team management',
               'Lead management tools',
               'Advanced analytics',
@@ -114,11 +127,11 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Developer Growth',
             price: '\$79/mo',
-            productId: 'developer_growth_monthly',
+            realProductId: null,
             badge: 'Coming Soon',
             comingSoon: true,
             features: [
-              'Unlimited developments',
+              'Up to 20 active developments',
               'Priority support',
               'White-label options',
               'API access',
@@ -129,21 +142,25 @@ enum SubscriptionPlansContext {
         return [
           _PlanOption(
             name: 'Host Pro',
-            price: '\$19.99/mo',
-            productId: 'host_pro_monthly',
+            price: '\$9.99/mo',
+            realProductId: InAppBillingService.airbnbHostProMonthlyId,
             features: [
-              'Up to 5 Airbnb listings',
+              'Unlimited Airbnb listings',
+              'Up to 5 general listings',
               'Smart pricing suggestions',
               'Guest messaging templates',
               'Revenue dashboard',
             ],
           ),
           _PlanOption(
-            name: 'Host Elite',
-            price: '\$49.99/mo',
-            productId: 'host_elite_monthly',
+            name: 'Host Plus',
+            price: '\$39.99/mo',
+            realProductId: null,
+            badge: 'Coming Soon',
+            comingSoon: true,
             features: [
-              'Up to 25 Airbnb listings',
+              'Unlimited Airbnb listings',
+              'Up to 15 general listings',
               'Channel manager integration',
               'Dynamic pricing tools',
               'Priority support',
@@ -155,9 +172,12 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Owner Pro',
             price: '\$9.99/mo',
-            productId: 'owner_pro_monthly',
+            realProductId: null,
+            badge: 'Coming Soon',
+            comingSoon: true,
             features: [
-              'Up to 5 active listings',
+              'Up to 3 general listings',
+              'Up to 2 Airbnb listings',
               'Advanced analytics',
               'Featured listing eligibility',
               'Priority inbox',
@@ -166,9 +186,12 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Owner Investor',
             price: '\$19.99/mo',
-            productId: 'owner_investor_monthly',
+            realProductId: null,
+            badge: 'Coming Soon',
+            comingSoon: true,
             features: [
-              'Up to 20 active listings',
+              'Up to 10 general listings',
+              'Up to 10 Airbnb listings',
               'Portfolio analytics',
               'Market value estimates',
               'All Pro features',
@@ -180,7 +203,7 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Realtor Pro',
             price: '\$29/mo',
-            productId: 'realtor_pro_monthly',
+            realProductId: InAppBillingService.realtorProMonthlyId,
             badge: 'Recommended',
             features: [
               'Up to 50 regular listings',
@@ -193,7 +216,9 @@ enum SubscriptionPlansContext {
           _PlanOption(
             name: 'Realtor Elite',
             price: '\$99/mo',
-            productId: 'realtor_elite_monthly',
+            realProductId: null,
+            badge: 'Coming Soon',
+            comingSoon: true,
             features: [
               '200+ listings',
               'Up to 25 Airbnb listings',
@@ -220,85 +245,208 @@ class SubscriptionPlansScreen extends StatelessWidget {
   Widget build(BuildContext ctx) {
     return Scaffold(
       appBar: AppBar(title: Text(context.title)),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        child: Column(
-          children: [
-            // Hero
-            Column(
+      body: Consumer<InAppBillingService>(
+        builder: (context, billing, _) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Column(
               children: [
-                Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: context.accentColor.withOpacity(0.12),
-                    shape: BoxShape.circle,
+                // Hero
+                Column(
+                  children: [
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        color: this.context.accentColor.withOpacity(0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(this.context.icon,
+                          color: this.context.accentColor, size: 40),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      this.context.title,
+                      style: const TextStyle(
+                          fontSize: 26, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      this.context.subtitle,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 28),
+                if (!billing.storeAvailable)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.shade300),
+                      ),
+                      child: Text(
+                        'Google Play Billing is not available in this environment. '
+                        'Purchases require the app to be installed from the Play Store.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.amber.shade900,
+                              height: 1.4,
+                            ),
+                      ),
+                    ),
                   ),
-                  child: Icon(context.icon,
-                      color: context.accentColor, size: 40),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Choose a Plan',
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  context.title,
-                  style: const TextStyle(
-                      fontSize: 26, fontWeight: FontWeight.bold),
+                ...this.context.plans.map(
+                      (plan) => Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: _PlanCard(
+                          plan: plan,
+                          accentColor: this.context.accentColor,
+                          billing: billing,
+                          role: this.context.roleForEntitlements,
+                        ),
+                      ),
+                    ),
+                if (billing.pendingApprovalMessage != null) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Text(
+                      billing.pendingApprovalMessage!,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Colors.blue.shade900),
+                    ),
+                  ),
+                ],
+                if (billing.lastError != null) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Text(
+                      billing.lastError!,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Colors.red.shade700),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                // Restore
+                TextButton(
+                  onPressed: () async {
+                    await billing.restorePurchases();
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(
+                            content: Text(
+                                'Restore complete. Active plans will update shortly.')),
+                      );
+                    }
+                  },
+                  child: const Text('Restore Purchases'),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
+                // Legal note
                 Text(
-                  context.subtitle,
+                  'Subscriptions renew automatically. Cancel anytime in Google Play.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.textSecondary),
+                  style: TextStyle(
+                      fontSize: 11, color: AppColors.textTertiary),
                 ),
+                const SizedBox(height: 16),
               ],
             ),
-            const SizedBox(height: 28),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Choose a Plan',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            const SizedBox(height: 12),
-            ...context.plans.map(
-              (plan) => Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _PlanCard(plan: plan, accentColor: context.accentColor),
-              ),
-            ),
-            const SizedBox(height: 16),
-            // Restore
-            TextButton(
-              onPressed: () => ScaffoldMessenger.of(ctx).showSnackBar(
-                const SnackBar(
-                    content: Text('Restoring purchases via Google Play...')),
-              ),
-              child: const Text('Restore Purchases'),
-            ),
-            const SizedBox(height: 8),
-            // Legal note
-            Text(
-              'Subscriptions renew automatically. Cancel anytime in Google Play.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontSize: 11, color: AppColors.textTertiary),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
 }
 
-class _PlanCard extends StatelessWidget {
-  const _PlanCard({required this.plan, required this.accentColor});
+class _PlanCard extends StatefulWidget {
+  const _PlanCard({
+    required this.plan,
+    required this.accentColor,
+    required this.billing,
+    this.role,
+  });
   final _PlanOption plan;
   final Color accentColor;
+  final InAppBillingService billing;
+
+  /// Passed to [InAppBillingService.effectiveTierProductId] for legacy-plan
+  /// grandfathering (see that method's doc comment).
+  final String? role;
+
+  @override
+  State<_PlanCard> createState() => _PlanCardState();
+}
+
+class _PlanCardState extends State<_PlanCard> {
+  bool _purchasing = false;
+
+  Future<void> _subscribe(ProductDetails product) async {
+    setState(() => _purchasing = true);
+    try {
+      await widget.billing.purchasePremium(product);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'Complete the payment in Google Play. Your plan updates once confirmed.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Purchase error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _purchasing = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final plan = widget.plan;
+    final accentColor = widget.accentColor;
     final isRecommended =
         plan.badge == 'Recommended' || plan.badge == 'Save 33%';
+
+    final product = plan.realProductId == null
+        ? null
+        : widget.billing.productById(plan.realProductId!);
+    final isCurrentPlan = plan.realProductId != null &&
+        widget.billing.effectiveTierProductId(role: widget.role) ==
+            plan.realProductId;
+    final canPurchase = !plan.comingSoon &&
+        !isCurrentPlan &&
+        widget.billing.storeAvailable &&
+        product != null;
+    final badgeText = isCurrentPlan ? 'Current Plan' : plan.badge;
 
     return Container(
       width: double.infinity,
@@ -306,7 +454,7 @@ class _PlanCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(14),
-        border: isRecommended
+        border: isRecommended || isCurrentPlan
             ? Border.all(color: accentColor.withOpacity(0.5), width: 1.5)
             : null,
         boxShadow: [
@@ -335,7 +483,7 @@ class _PlanCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (plan.badge != null)
+              if (badgeText != null)
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 4),
@@ -346,7 +494,7 @@ class _PlanCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    plan.badge!,
+                    badgeText,
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
@@ -382,21 +530,28 @@ class _PlanCard extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: plan.comingSoon
+              onPressed: _purchasing || !canPurchase
                   ? null
-                  : () => ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                            content: Text(
-                                'Opening Google Play for ${plan.name}...')),
-                      ),
+                  : () => _subscribe(product),
               style: FilledButton.styleFrom(
-                backgroundColor:
-                    plan.comingSoon ? Colors.grey : accentColor,
+                backgroundColor: plan.comingSoon || isCurrentPlan
+                    ? Colors.grey
+                    : accentColor,
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: Text(plan.comingSoon
-                  ? 'Coming Soon'
-                  : 'Subscribe – ${plan.price}'),
+              child: _purchasing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : Text(
+                      plan.comingSoon
+                          ? 'Coming Soon'
+                          : isCurrentPlan
+                              ? 'Current Plan'
+                              : 'Subscribe – ${plan.price}',
+                    ),
             ),
           ),
         ],
@@ -409,14 +564,17 @@ class _PlanOption {
   const _PlanOption({
     required this.name,
     required this.price,
-    required this.productId,
+    required this.realProductId,
     required this.features,
     this.badge,
     this.comingSoon = false,
   });
   final String name;
   final String price;
-  final String productId;
+
+  /// The actual Play Billing / App Store Connect product id, or null when
+  /// this tier has no configured product yet (mirrors iOS `comingSoon`).
+  final String? realProductId;
   final List<String> features;
   final String? badge;
   final bool comingSoon;
@@ -560,6 +718,7 @@ class ProfessionalListingNudgeModal extends StatelessWidget {
               ),
               IconButton(
                 icon: const Icon(Icons.close),
+                tooltip: 'Close',
                 onPressed: () => Navigator.of(context).pop(),
               ),
             ],

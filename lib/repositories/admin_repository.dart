@@ -3,6 +3,11 @@ import 'package:cloud_functions/cloud_functions.dart';
 
 import '../constants/app_constants.dart';
 import '../models/admin_analytics_deep.dart';
+import '../models/blocked_word.dart';
+import '../models/moderation_log.dart';
+import '../models/moderation_stats.dart';
+import '../services/admin_audit_service.dart';
+import '../services/in_app_notification_service.dart';
 import 'property_repository.dart';
 
 /// Firestore + callable admin operations (requires `users.role` / `user_public.role` admin in rules).
@@ -11,11 +16,22 @@ class AdminRepository {
     this._db,
     this._propertyRepo, {
     FirebaseFunctions? functions,
-  }) : _fns = functions ?? FirebaseFunctions.instanceFor(region: 'us-central1');
+    AdminAuditService? auditService,
+  })  : _fns = functions ?? FirebaseFunctions.instanceFor(region: 'us-central1'),
+        _audit = auditService ?? AdminAuditService();
 
   final FirebaseFirestore _db;
   final PropertyRepository _propertyRepo;
   final FirebaseFunctions _fns;
+  final AdminAuditService _audit;
+
+  /// Verified Realtor Rewards, Part 9 — "view verification history".
+  Stream<List<Map<String, dynamic>>> watchAuditLog({
+    required String targetType,
+    required String targetId,
+  }) {
+    return _audit.watchLog(targetType: targetType, targetId: targetId);
+  }
 
   // ── verificationRequests (KYC + admin interest applications) ─────────────
 
@@ -106,6 +122,16 @@ class AdminRepository {
     }
 
     await batch.commit();
+
+    await _audit.log(
+      action: 'verification_status_change',
+      targetType: 'verification_request',
+      targetId: docId,
+      details: {
+        'newStatus': normStatus,
+        if (userId != null && userId.isNotEmpty) 'userId': userId,
+      },
+    );
   }
 
   // ── adminApplications (mirrors iOS AdminApplicationService) ──────────────
@@ -131,10 +157,13 @@ class AdminRepository {
     String? rejectionReason,
     String? reviewedBy,
   }) async {
-    await _db
+    final docRef = _db
         .collection(AppConstants.adminApplicationsCollection)
-        .doc(applicationId)
-        .update(<String, dynamic>{
+        .doc(applicationId);
+    final applicantId =
+        (await docRef.get()).data()?['applicantId'] as String?;
+
+    await docRef.update(<String, dynamic>{
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
       if (reviewedBy != null) 'reviewedBy': reviewedBy,
@@ -147,6 +176,59 @@ class AdminRepository {
       if (rejectionReason != null && rejectionReason.isNotEmpty)
         'rejectionReason': rejectionReason,
     });
+
+    await _audit.log(
+      action: 'admin_application_status_change',
+      targetType: 'admin_application',
+      targetId: applicationId,
+      details: {
+        'newStatus': status,
+        if (rejectionReason != null && rejectionReason.isNotEmpty)
+          'rejectionReason': rejectionReason,
+      },
+    );
+
+    if (applicantId != null && applicantId.isNotEmpty) {
+      await _notifyApplicantOfStatusChange(applicantId, status);
+    }
+  }
+
+  /// Mirrors iOS `AdminApplicationService.notifyApplicantOfStatusChange` —
+  /// same title/body per status, no notification for `pending`.
+  Future<void> _notifyApplicantOfStatusChange(
+    String applicantId,
+    String status,
+  ) async {
+    final String title;
+    final String body;
+    switch (status) {
+      case 'under_review':
+        title = 'Application Under Review';
+        body = 'Your admin application is now being reviewed by our team.';
+        break;
+      case 'approved':
+        title = 'Application Approved! 🎉';
+        body =
+            'Congratulations! Your admin application has been approved. You now have admin privileges.';
+        break;
+      case 'rejected':
+        title = 'Application Update';
+        body =
+            'Your admin application has been reviewed. Please check your application for details.';
+        break;
+      case 'withdrawn':
+        title = 'Application Withdrawn';
+        body = 'Your admin application has been withdrawn.';
+        break;
+      default:
+        return; // No notification needed for pending status.
+    }
+    await InAppNotificationService.send(
+      userId: applicantId,
+      title: title,
+      body: body,
+      type: 'admin_application',
+    );
   }
 
   // ── property_reports ─────────────────────────────────────────────────────
@@ -173,6 +255,13 @@ class AdminRepository {
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    await _audit.log(
+      action: 'property_report_status_change',
+      targetType: 'property_report',
+      targetId: docId,
+      details: {'newStatus': status},
+    );
   }
 
   // ── moderation_reports (users/messages/reviews — same as iOS ModerationService) ─
@@ -203,6 +292,8 @@ class AdminRepository {
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    await _audit.logReportStatusChange(reportId: docId, newStatus: status);
   }
 
   // ── users (browse) ───────────────────────────────────────────────────────
@@ -227,6 +318,8 @@ class AdminRepository {
       'role': role,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    await _audit.logUserUpdate(userId: userId, fields: const ['role']);
   }
 
   // ── properties (moderation / takedown) ────────────────────────────────────
@@ -264,10 +357,22 @@ class AdminRepository {
         'moderationRejectionReason': rejectionReason,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    await _audit.log(
+      action: 'property_moderation_status_change',
+      targetType: 'property',
+      targetId: propertyId,
+      details: {
+        'newModerationStatus': moderationStatus,
+        if (rejectionReason != null && rejectionReason.isNotEmpty)
+          'rejectionReason': rejectionReason,
+      },
+    );
   }
 
-  Future<void> adminSoftDeleteProperty(String propertyId) {
-    return _propertyRepo.softDeleteProperty(propertyId);
+  Future<void> adminSoftDeleteProperty(String propertyId) async {
+    await _propertyRepo.softDeleteProperty(propertyId);
+    await _audit.logPropertyDelete(propertyId);
   }
 
   /// Streams ALL properties (including deleted) with richer fields.
@@ -303,14 +408,24 @@ class AdminRepository {
 
   /// Updates a property's `status` field directly — mirrors iOS
   /// `AdminPropertiesViewModel.updatePropertyStatus(_:to:)`.
+  ///
+  /// [oldStatus], when known to the caller, is included in the audit entry
+  /// (mirrors iOS `AdminAuditService.logPropertyStatusChange`).
   Future<void> updatePropertyStatus({
     required String propertyId,
     required String status,
+    String? oldStatus,
   }) async {
     await _db.collection(AppConstants.propertiesCollection).doc(propertyId).update({
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    await _audit.logPropertyStatusChange(
+      propertyId: propertyId,
+      oldStatus: oldStatus ?? 'unknown',
+      newStatus: status,
+    );
   }
 
   /// Calls the `updateTrustScore` Cloud Function — mirrors iOS
@@ -325,6 +440,13 @@ class AdminRepository {
       'eventType': eventType,
       'metadata': <String, String>{'source': 'admin_android'},
     });
+
+    await _audit.log(
+      action: 'property_trust_event',
+      targetType: 'property',
+      targetId: propertyId,
+      details: {'eventType': eventType},
+    );
   }
 
   // ── projects (developments) ───────────────────────────────────────────────
@@ -361,6 +483,17 @@ class AdminRepository {
       if (rejectionReason != null && rejectionReason.isNotEmpty)
         'rejectionReason': rejectionReason,
     });
+
+    await _audit.log(
+      action: 'project_moderation_status_change',
+      targetType: 'project',
+      targetId: projectId,
+      details: {
+        'newModerationStatus': moderationStatus,
+        if (rejectionReason != null && rejectionReason.isNotEmpty)
+          'rejectionReason': rejectionReason,
+      },
+    );
   }
 
   // ── config / adminSettings (matches iOS AdminSettingsView) ────────────────
@@ -376,6 +509,17 @@ class AdminRepository {
 
   Future<void> saveAdminSettings(AdminRemoteSettings settings) async {
     await _adminSettingsRef.set(settings.toFirestore(), SetOptions(merge: true));
+
+    await _audit.log(
+      action: 'admin_settings_update',
+      targetType: 'config',
+      targetId: AppConstants.adminSettingsDocumentId,
+      details: {
+        'maintenanceMode': settings.maintenanceMode,
+        'allowGuestMode': settings.allowGuestMode,
+        'featuredListingsLimit': settings.featuredListingsLimit,
+      },
+    );
   }
 
   /// Same Cloud Function as iOS `backfillExpirationFields`.
@@ -390,7 +534,21 @@ class AdminRepository {
       'limit': limit,
       if (startAfterId != null && startAfterId.isNotEmpty) 'startAfterId': startAfterId,
     });
-    return BackfillExpirationResult.fromDynamic(raw.data);
+    final result = BackfillExpirationResult.fromDynamic(raw.data);
+
+    if (!dryRun) {
+      await _audit.log(
+        action: 'listing_expiration_backfill',
+        targetType: 'batch',
+        targetId: 'expiration_fields',
+        details: {
+          'examined': result.examined,
+          'updated': result.updated,
+        },
+      );
+    }
+
+    return result;
   }
 
   // ── aggregate stats (best-effort) ────────────────────────────────────────
@@ -496,6 +654,11 @@ class AdminRepository {
       'verificationLevel': verificationLevel,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    await _audit.logUserUpdate(
+      userId: userId,
+      fields: const ['role', 'verificationStatus', 'verificationLevel'],
+    );
   }
 
   Future<void> setUserBanned(String userId, bool banned) async {
@@ -505,6 +668,8 @@ class AdminRepository {
       if (banned) 'bannedAt': FieldValue.serverTimestamp(),
       if (!banned) 'bannedAt': FieldValue.delete(),
     });
+
+    await _audit.logUserBan(userId: userId, banned: banned);
   }
 
   Future<void> suspendUser({
@@ -521,12 +686,21 @@ class AdminRepository {
       'suspensionReason': reason,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    await _audit.logUserSuspend(userId: userId, days: days, reason: reason);
   }
 
   /// iOS `adminBackfillUserVerification` callable.
   Future<String?> adminBackfillUserVerification(String userId) async {
     final callable = _fns.httpsCallable('adminBackfillUserVerification');
     final raw = await callable.call(<String, dynamic>{'userId': userId});
+
+    await _audit.log(
+      action: 'user_verification_backfill',
+      targetType: 'user',
+      targetId: userId,
+    );
+
     final m = raw.data;
     if (m is Map) {
       return m['message'] as String?;
@@ -761,6 +935,94 @@ class AdminRepository {
   static int timestampMillis(dynamic v) {
     if (v is Timestamp) return v.millisecondsSinceEpoch;
     return 0;
+  }
+
+  // ── Content moderation (functions/moderation-*.js) ───────────────────────
+
+  static const String moderationBlockedWordsCollection = 'moderation_blockedWords';
+  static const String moderationLogsCollection = 'moderation_logs';
+
+  /// Part 2 — admins manage the blocked-words list directly (Firestore
+  /// rules: admin read/write), same as other admin-editable config
+  /// collections. No callable needed.
+  Stream<List<BlockedWord>> watchBlockedWords() {
+    return _db
+        .collection(moderationBlockedWordsCollection)
+        .snapshots()
+        .map((snap) => snap.docs
+            .map((d) => BlockedWord.fromFirestore(d.id, d.data()))
+            .toList()
+          ..sort((a, b) => a.word.compareTo(b.word)));
+  }
+
+  Future<void> addBlockedWord(BlockedWord word) async {
+    await _db.collection(moderationBlockedWordsCollection).add(word.toFirestore());
+    await _audit.log(
+      action: 'moderation_blocked_word_add',
+      targetType: 'blocked_word',
+      targetId: word.word,
+      details: {'severity': word.severity, 'category': word.category},
+    );
+  }
+
+  Future<void> updateBlockedWord(BlockedWord word) async {
+    await _db
+        .collection(moderationBlockedWordsCollection)
+        .doc(word.id)
+        .set(word.toFirestore(), SetOptions(merge: true));
+    await _audit.log(
+      action: 'moderation_blocked_word_update',
+      targetType: 'blocked_word',
+      targetId: word.id,
+      details: {'severity': word.severity, 'enabled': word.enabled},
+    );
+  }
+
+  Future<void> deleteBlockedWord(String id) async {
+    await _db.collection(moderationBlockedWordsCollection).doc(id).delete();
+    await _audit.log(
+      action: 'moderation_blocked_word_delete',
+      targetType: 'blocked_word',
+      targetId: id,
+    );
+  }
+
+  /// Part 7 — read-only feed of `moderation_logs`, most recent first.
+  Stream<List<ModerationLog>> watchModerationLogs({
+    int limit = 150,
+    String? decisionFilter,
+  }) {
+    Query<Map<String, dynamic>> q = _db.collection(moderationLogsCollection);
+    if (decisionFilter != null && decisionFilter.isNotEmpty) {
+      q = q.where('decision', isEqualTo: decisionFilter);
+    }
+    return q
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snap) =>
+            snap.docs.map((d) => ModerationLog.fromFirestore(d.id, d.data())).toList());
+  }
+
+  /// Part 8 — aggregate stats via the `getModerationStats` callable
+  /// (server-side `.count()` aggregation — see its own doc comment for why
+  /// this isn't computed client-side like `fetchAdminAnalyticsDeep`).
+  Future<ModerationStats> fetchModerationStats() async {
+    final callable = _fns.httpsCallable('getModerationStats');
+    final result = await callable.call<dynamic>();
+    final data = result.data;
+    if (data is! Map) return ModerationStats.fromMap(const {});
+    return ModerationStats.fromMap(Map<String, dynamic>.from(data));
+  }
+
+  /// Marks a moderation_logs entry reviewed — powers Part 8's
+  /// false-positive-rate stat.
+  Future<void> markModerationLogReviewed({
+    required String logId,
+    required bool falsePositive,
+  }) async {
+    final callable = _fns.httpsCallable('markModerationLogReviewed');
+    await callable.call<dynamic>({'logId': logId, 'falsePositive': falsePositive});
   }
 }
 

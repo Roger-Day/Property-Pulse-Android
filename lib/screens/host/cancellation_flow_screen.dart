@@ -2,63 +2,52 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../models/cancellation_policy.dart';
 import '../../services/cancellation_service.dart';
 
-enum _CancellationStep { selectReason, reviewPolicy, confirm, processing, success, failure }
-
-enum _CancellationReason {
-  propertyUnavailable,
-  emergency,
-  doubleBooked,
-  maintenanceIssue,
-  other;
-
-  String get label {
-    switch (this) {
-      case _CancellationReason.propertyUnavailable:
-        return 'Property unavailable';
-      case _CancellationReason.emergency:
-        return 'Host emergency';
-      case _CancellationReason.doubleBooked:
-        return 'Double booking';
-      case _CancellationReason.maintenanceIssue:
-        return 'Maintenance issue';
-      case _CancellationReason.other:
-        return 'Other';
-    }
-  }
-
-  String get value {
-    switch (this) {
-      case _CancellationReason.propertyUnavailable:
-        return 'host_property_unavailable';
-      case _CancellationReason.emergency:
-        return 'host_emergency';
-      case _CancellationReason.doubleBooked:
-        return 'host_double_booked';
-      case _CancellationReason.maintenanceIssue:
-        return 'host_maintenance_issue';
-      case _CancellationReason.other:
-        return 'other';
-    }
-  }
+enum _CancellationStep {
+  selectReason,
+  loadingPolicy,
+  reviewPolicy,
+  confirm,
+  processing,
+  success,
+  failure,
 }
 
 /// Mirrors iOS `CancellationFlowView` — multi-step booking cancellation.
+///
+/// Supports both host- and guest-initiated cancellation. The refund preview
+/// shown before confirming is computed via [CancellationPolicyEngine] from
+/// the booking's actual cancellation policy for guests (host cancellations
+/// always preview a full refund) — the `cancelBooking` Cloud Function
+/// recomputes the authoritative refund server-side on submit regardless.
 class CancellationFlowScreen extends StatefulWidget {
   const CancellationFlowScreen({
     super.key,
     required this.bookingId,
     required this.propertyTitle,
-    required this.guestName,
     required this.totalPrice,
+    this.guestName,
+    this.checkIn,
+    this.cancellationPolicyId,
+    this.role = 'host',
     this.onDismiss,
   });
 
   final String bookingId;
   final String propertyTitle;
-  final String guestName;
+
+  /// Shown only when [role] is 'host' (who they're cancelling on).
+  final String? guestName;
+
+  /// Total amount paid, in dollars.
   final double totalPrice;
+  final DateTime? checkIn;
+  final String? cancellationPolicyId;
+
+  /// 'host' or 'guest'.
+  final String role;
   final VoidCallback? onDismiss;
 
   @override
@@ -68,19 +57,46 @@ class CancellationFlowScreen extends StatefulWidget {
 
 class _CancellationFlowScreenState extends State<CancellationFlowScreen> {
   _CancellationStep _step = _CancellationStep.selectReason;
-  _CancellationReason? _selectedReason;
+  CancellationReason? _selectedReason;
   String _customReason = '';
   String? _error;
+  CancellationPreview? _preview;
 
-  // Hosts cancelling bookings always issue a full 100% refund.
-  double get _refundPercent => 100.0;
+  bool get _isGuest => widget.role == 'guest';
 
-  double get _refundAmount => widget.totalPrice * _refundPercent / 100;
+  List<CancellationReason> get _reasonOptions =>
+      _isGuest ? CancellationReason.guestReasons : CancellationReason.hostReasons;
+
+  int get _totalAmountCents => (widget.totalPrice * 100).round();
 
   bool get _canProceed =>
       _selectedReason != null &&
-      (_selectedReason != _CancellationReason.other ||
+      (_selectedReason != CancellationReason.other ||
           _customReason.trim().isNotEmpty);
+
+  Future<void> _loadPreview() async {
+    setState(() => _step = _CancellationStep.loadingPolicy);
+    try {
+      final preview =
+          await context.read<CancellationService>().buildCancellationPreview(
+                role: widget.role,
+                totalAmountCents: _totalAmountCents,
+                cancellationPolicyId: widget.cancellationPolicyId,
+                checkIn: widget.checkIn,
+              );
+      if (!mounted) return;
+      setState(() {
+        _preview = preview;
+        _step = _CancellationStep.reviewPolicy;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Could not load the cancellation policy. Please try again.';
+        _step = _CancellationStep.failure;
+      });
+    }
+  }
 
   Future<void> _submit() async {
     setState(() => _step = _CancellationStep.processing);
@@ -89,15 +105,15 @@ class _CancellationFlowScreenState extends State<CancellationFlowScreen> {
       await cancellationService.cancelBooking(
         bookingId: widget.bookingId,
         reason: _selectedReason?.value ?? 'other',
-        role: 'host',
-        customReason: _customReason,
+        role: widget.role,
+        customReason: _customReason.trim().isEmpty ? null : _customReason.trim(),
       );
       if (!mounted) return;
       setState(() => _step = _CancellationStep.success);
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = 'Unable to cancel this booking. Please try again.';
         _step = _CancellationStep.failure;
       });
     }
@@ -125,53 +141,48 @@ class _CancellationFlowScreenState extends State<CancellationFlowScreen> {
     switch (_step) {
       case _CancellationStep.selectReason:
         return _ReasonStep(
+          reasons: _reasonOptions,
           selectedReason: _selectedReason,
           customReason: _customReason,
-          onSelectReason: (r) =>
-              setState(() => _selectedReason = r),
-          onCustomReasonChanged: (v) =>
-              setState(() => _customReason = v),
-          onNext: _canProceed
-              ? () => setState(
-                  () => _step = _CancellationStep.reviewPolicy)
-              : null,
+          onSelectReason: (r) => setState(() => _selectedReason = r),
+          onCustomReasonChanged: (v) => setState(() => _customReason = v),
+          onNext: _canProceed ? _loadPreview : null,
         );
+      case _CancellationStep.loadingPolicy:
+        return const _ProcessingStep(label: 'Checking cancellation policy…');
       case _CancellationStep.reviewPolicy:
         return _PolicyStep(
           propertyTitle: widget.propertyTitle,
           guestName: widget.guestName,
           totalPrice: widget.totalPrice,
-          refundAmount: _refundAmount,
-          refundPercent: _refundPercent,
-          onBack: () =>
-              setState(() => _step = _CancellationStep.selectReason),
-          onConfirm: () =>
-              setState(() => _step = _CancellationStep.confirm),
+          preview: _preview!,
+          onBack: () => setState(() => _step = _CancellationStep.selectReason),
+          onConfirm: () => setState(() => _step = _CancellationStep.confirm),
         );
       case _CancellationStep.confirm:
         return _ConfirmStep(
           propertyTitle: widget.propertyTitle,
-          refundAmount: _refundAmount,
-          onBack: () =>
-              setState(() => _step = _CancellationStep.reviewPolicy),
+          preview: _preview!,
+          onBack: () => setState(() => _step = _CancellationStep.reviewPolicy),
           onSubmit: _submit,
         );
       case _CancellationStep.processing:
-        return const _ProcessingStep();
+        return const _ProcessingStep(label: 'Processing cancellation…');
       case _CancellationStep.success:
         return _SuccessStep(
-            refundAmount: _refundAmount,
-            onDismiss: widget.onDismiss);
+            preview: _preview, onDismiss: widget.onDismiss);
       case _CancellationStep.failure:
         return _FailureStep(
-            message: _error ?? 'Unknown error',
-            onDismiss: widget.onDismiss);
+            message: _error ?? 'Unknown error', onDismiss: widget.onDismiss);
     }
   }
 }
 
+// ─── Step widgets ─────────────────────────────────────────────────────────────
+
 class _ReasonStep extends StatelessWidget {
   const _ReasonStep({
+    required this.reasons,
     required this.selectedReason,
     required this.customReason,
     required this.onSelectReason,
@@ -179,9 +190,10 @@ class _ReasonStep extends StatelessWidget {
     required this.onNext,
   });
 
-  final _CancellationReason? selectedReason;
+  final List<CancellationReason> reasons;
+  final CancellationReason? selectedReason;
   final String customReason;
-  final void Function(_CancellationReason) onSelectReason;
+  final void Function(CancellationReason) onSelectReason;
   final void Function(String) onCustomReasonChanged;
   final VoidCallback? onNext;
 
@@ -205,7 +217,7 @@ class _ReasonStep extends StatelessWidget {
               ],
             ),
             child: Column(
-              children: _CancellationReason.values
+              children: reasons
                   .map((r) => _ReasonTile(
                         reason: r,
                         isSelected: selectedReason == r,
@@ -214,15 +226,14 @@ class _ReasonStep extends StatelessWidget {
                   .toList(),
             ),
           ),
-          if (selectedReason == _CancellationReason.other) ...[
+          if (selectedReason == CancellationReason.other) ...[
             const SizedBox(height: 16),
             const Text('Additional details',
                 style: TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             TextField(
               decoration: const InputDecoration(
-                  hintText: 'Tell us more...',
-                  border: OutlineInputBorder()),
+                  hintText: 'Tell us more...', border: OutlineInputBorder()),
               maxLines: 3,
               onChanged: onCustomReasonChanged,
             ),
@@ -246,17 +257,15 @@ class _ReasonStep extends StatelessWidget {
 
 class _ReasonTile extends StatelessWidget {
   const _ReasonTile(
-      {required this.reason,
-      required this.isSelected,
-      required this.onTap});
-  final _CancellationReason reason;
+      {required this.reason, required this.isSelected, required this.onTap});
+  final CancellationReason reason;
   final bool isSelected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      title: Text(reason.label),
+      title: Text(reason.displayTitle),
       trailing: isSelected
           ? const Icon(Icons.check_circle, color: AppColors.primary)
           : const Icon(Icons.radio_button_unchecked,
@@ -271,17 +280,15 @@ class _PolicyStep extends StatelessWidget {
     required this.propertyTitle,
     required this.guestName,
     required this.totalPrice,
-    required this.refundAmount,
-    required this.refundPercent,
+    required this.preview,
     required this.onBack,
     required this.onConfirm,
   });
 
   final String propertyTitle;
-  final String guestName;
+  final String? guestName;
   final double totalPrice;
-  final double refundAmount;
-  final double refundPercent;
+  final CancellationPreview preview;
   final VoidCallback onBack;
   final VoidCallback onConfirm;
 
@@ -293,21 +300,27 @@ class _PolicyStep extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('Cancellation Policy',
-              style:
-                  TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text(
+            '${preview.policy.name} — ${preview.policy.description}',
+            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          ),
           const SizedBox(height: 16),
           _InfoCard(
             children: [
               _InfoRow(label: 'Property', value: propertyTitle),
-              _InfoRow(label: 'Guest', value: guestName),
+              if (guestName != null && guestName!.trim().isNotEmpty)
+                _InfoRow(label: 'Guest', value: guestName!),
               _InfoRow(
-                  label: 'Total Paid',
-                  value: '\$${totalPrice.toStringAsFixed(2)}'),
+                  label: 'Total Paid', value: '\$${totalPrice.toStringAsFixed(2)}'),
               _InfoRow(
-                  label: 'Refund',
-                  value:
-                      '\$${refundAmount.toStringAsFixed(2)} (${refundPercent.round()}%)',
-                  valueColor: Colors.green),
+                label: 'Refund',
+                value: preview.isNoRefund
+                    ? 'No refund'
+                    : '\$${preview.refundAmountDollars.toStringAsFixed(2)} (${preview.refundPercent}%)',
+                valueColor: preview.isNoRefund ? Colors.red : Colors.green,
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -318,14 +331,20 @@ class _PolicyStep extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.amber.withOpacity(0.3)),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.info_outline, color: Colors.amber),
-                SizedBox(width: 10),
+                const Icon(Icons.info_outline, color: Colors.amber),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Refunds are processed within 5–7 business days.',
-                    style: TextStyle(fontSize: 13),
+                    preview.checkInKnown
+                        ? (preview.isNoRefund
+                            ? 'This booking is past the free-cancellation window.'
+                            : 'Refunds are processed within 5-7 business days.')
+                        : "We couldn't confirm the exact check-in date — the "
+                            'refund shown is an estimate and will be finalized '
+                            'when you confirm.',
+                    style: const TextStyle(fontSize: 13),
                   ),
                 ),
               ],
@@ -361,13 +380,13 @@ class _PolicyStep extends StatelessWidget {
 class _ConfirmStep extends StatelessWidget {
   const _ConfirmStep({
     required this.propertyTitle,
-    required this.refundAmount,
+    required this.preview,
     required this.onBack,
     required this.onSubmit,
   });
 
   final String propertyTitle;
-  final double refundAmount;
+  final CancellationPreview preview;
   final VoidCallback onBack;
   final VoidCallback onSubmit;
 
@@ -379,12 +398,13 @@ class _ConfirmStep extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('Confirm Cancellation',
-              style:
-                  TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
           Text(
-            'Are you sure you want to cancel this booking for $propertyTitle? You\'ll receive a refund of \$${refundAmount.toStringAsFixed(2)}.',
-            style: TextStyle(color: AppColors.textSecondary),
+            preview.isNoRefund
+                ? "Are you sure you want to cancel this booking for $propertyTitle? Based on the cancellation policy, you won't receive a refund."
+                : "Are you sure you want to cancel this booking for $propertyTitle? You'll receive a refund of \$${preview.refundAmountDollars.toStringAsFixed(2)}.",
+            style: const TextStyle(color: AppColors.textSecondary),
           ),
           const SizedBox(height: 24),
           Container(
@@ -422,8 +442,7 @@ class _ConfirmStep extends StatelessWidget {
                   onPressed: onSubmit,
                   style: FilledButton.styleFrom(
                     backgroundColor: Colors.red,
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 14),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                   child: const Text('Cancel Booking'),
                 ),
@@ -437,29 +456,34 @@ class _ConfirmStep extends StatelessWidget {
 }
 
 class _ProcessingStep extends StatelessWidget {
-  const _ProcessingStep();
+  const _ProcessingStep({required this.label});
+  final String label;
 
   @override
-  Widget build(BuildContext context) => const Center(
+  Widget build(BuildContext context) => Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 20),
-            Text('Processing cancellation…'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            Text(label),
           ],
         ),
       );
 }
 
 class _SuccessStep extends StatelessWidget {
-  const _SuccessStep(
-      {required this.refundAmount, required this.onDismiss});
-  final double refundAmount;
+  const _SuccessStep({required this.preview, required this.onDismiss});
+  final CancellationPreview? preview;
   final VoidCallback? onDismiss;
 
   @override
   Widget build(BuildContext context) {
+    final refundText = preview == null
+        ? 'Your refund (if any) will be processed within 5-7 business days.'
+        : preview!.isNoRefund
+            ? 'Based on the cancellation policy, no refund was issued.'
+            : 'Your refund of \$${preview!.refundAmountDollars.toStringAsFixed(2)} will be processed within 5-7 business days.';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -475,13 +499,12 @@ class _SuccessStep extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             const Text('Booking Cancelled',
-                style: TextStyle(
-                    fontSize: 22, fontWeight: FontWeight.bold)),
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Text(
-              'Your refund of \$${refundAmount.toStringAsFixed(2)} will be processed within 5–7 business days.',
+              refundText,
               textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textSecondary),
+              style: const TextStyle(color: AppColors.textSecondary),
             ),
             const SizedBox(height: 32),
             FilledButton(
@@ -501,8 +524,7 @@ class _SuccessStep extends StatelessWidget {
 }
 
 class _FailureStep extends StatelessWidget {
-  const _FailureStep(
-      {required this.message, required this.onDismiss});
+  const _FailureStep({required this.message, required this.onDismiss});
   final String message;
   final VoidCallback? onDismiss;
 
@@ -517,12 +539,11 @@ class _FailureStep extends StatelessWidget {
             const Icon(Icons.error_outline, size: 64, color: Colors.red),
             const SizedBox(height: 16),
             const Text('Cancellation Failed',
-                style: TextStyle(
-                    fontSize: 20, fontWeight: FontWeight.bold)),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Text(message,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textSecondary)),
+                style: const TextStyle(color: AppColors.textSecondary)),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: () {
@@ -552,8 +573,7 @@ class _InfoCard extends StatelessWidget {
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.06), blurRadius: 4),
+          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 4),
         ],
       ),
       child: Column(children: children),
@@ -562,8 +582,7 @@ class _InfoCard extends StatelessWidget {
 }
 
 class _InfoRow extends StatelessWidget {
-  const _InfoRow(
-      {required this.label, required this.value, this.valueColor});
+  const _InfoRow({required this.label, required this.value, this.valueColor});
   final String label;
   final String value;
   final Color? valueColor;
@@ -577,14 +596,12 @@ class _InfoRow extends StatelessWidget {
           SizedBox(
             width: 100,
             child: Text(label,
-                style: const TextStyle(
-                    color: AppColors.textSecondary)),
+                style: const TextStyle(color: AppColors.textSecondary)),
           ),
           Expanded(
             child: Text(value,
-                style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: valueColor)),
+                style:
+                    TextStyle(fontWeight: FontWeight.w600, color: valueColor)),
           ),
         ],
       ),

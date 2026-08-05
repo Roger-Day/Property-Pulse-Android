@@ -48,6 +48,7 @@ class _HostReservationsScreenState extends State<HostReservationsScreen> {
         status: m['status'] as String? ?? 'pending',
         totalPrice: (m['totalPrice'] as num?)?.toDouble() ?? 0,
         nightsCount: (m['nightsCount'] as num?)?.toInt() ?? 1,
+        cancellationPolicyId: m['cancellationPolicyId'] as String?,
       );
     }).toList();
   }
@@ -130,6 +131,28 @@ class _HostReservationsScreenState extends State<HostReservationsScreen> {
               builder: (context, snap) {
                 if (snap.connectionState != ConnectionState.done) {
                   return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.cloud_off_outlined,
+                            size: 48, color: Colors.grey),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Could not load reservations',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton(
+                          onPressed: () =>
+                              setState(() => _future = _load()),
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
                 }
                 final all = snap.data ?? [];
                 final filtered = _filtered(all);
@@ -304,6 +327,9 @@ class _ReservationCard extends StatelessWidget {
                       propertyTitle: reservation.propertyTitle,
                       guestName: reservation.guestName,
                       totalPrice: reservation.totalPrice,
+                      checkIn: reservation.checkIn,
+                      cancellationPolicyId: reservation.cancellationPolicyId,
+                      role: 'host',
                     ),
                   ),
                   style: TextButton.styleFrom(
@@ -321,7 +347,6 @@ class _ReservationCard extends StatelessWidget {
                     builder: (_) => DisputeFlowScreen(
                       bookingId: reservation.id,
                       propertyTitle: reservation.propertyTitle,
-                      reporterUserId: reservation.guestId,
                     ),
                   ),
                   style: TextButton.styleFrom(
@@ -354,6 +379,7 @@ class _Reservation {
     required this.status,
     required this.totalPrice,
     required this.nightsCount,
+    this.cancellationPolicyId,
   });
   final String id;
   final String propertyTitle;
@@ -364,4 +390,5 @@ class _Reservation {
   final String status;
   final double totalPrice;
   final int nightsCount;
+  final String? cancellationPolicyId;
 }

@@ -1,14 +1,23 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_colors.dart';
+import '../../models/blocked_word.dart';
+import '../../models/moderation_flags.dart';
+import '../../models/moderation_log.dart';
+import '../../models/moderation_stats.dart';
+import '../../providers/moderation_feature_flags_provider.dart';
 import '../../repositories/admin_repository.dart';
+import '../../services/dispute_service.dart';
 import '../../utils/responsive.dart';
+import '../host/dispute_detail_screen.dart';
+import '../profile/edit_property_screen.dart';
 import 'admin_analytics_tab.dart';
 import 'admin_moderation_detail_sheet.dart';
 import 'admin_settings_tab.dart';
@@ -2787,6 +2796,164 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
     await _setStatus(context, id, 'rejected', userId: userId, note: reason);
   }
 
+  /// Verified Realtor Rewards, Part 9 — optional approval notes dialog,
+  /// mirroring [_rejectWithReason]'s pattern but with an empty note allowed
+  /// (approval doesn't require justification the way a rejection does).
+  Future<void> _approveWithNotes(
+    BuildContext context,
+    String id, {
+    String? userId,
+  }) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Approve verification'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: 'Approval notes (optional)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Approve'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final note = ctrl.text.trim();
+    await _setStatus(context, id, 'verified',
+        userId: userId, note: note.isEmpty ? null : note);
+  }
+
+  /// Verified Realtor Rewards, Part 9 — a true revoke, distinct from
+  /// [_setStatus]'s existing 'suspended' action. Writes `verificationStatus:
+  /// 'revoked'` to `users/{userId}`, which the `syncUserToPublicProfile`
+  /// trigger picks up and forwards to `handleVerificationStatusChange` →
+  /// `revokeVerifiedRewards` (zeroes verifiedBonusListings/isFeaturedEligible
+  /// and recomputes totalListingAllowance server-side).
+  Future<void> _revokeWithConfirmation(
+    BuildContext context,
+    String id, {
+    String? userId,
+  }) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revoke verification?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This immediately removes the Verified badge and every '
+              'verified-realtor reward, including the bonus listing slots.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                hintText: 'Reason (optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Revoke'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final note = ctrl.text.trim();
+    await _setStatus(context, id, 'revoked',
+        userId: userId, note: note.isEmpty ? null : note);
+  }
+
+  /// Verified Realtor Rewards, Part 9 — "view verification history": every
+  /// status change on this request is already logged to `admin_audit_log`
+  /// by [AdminRepository.updateVerificationRequestStatus] (targetType
+  /// 'verification_request', targetId == this request's docId).
+  void _showHistory(BuildContext context, String id) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (ctx, scrollController) => StreamBuilder<List<Map<String, dynamic>>>(
+          stream: widget.admin.watchAuditLog(
+            targetType: 'verification_request',
+            targetId: id,
+          ),
+          builder: (context, snap) {
+            final rows = snap.data ?? const [];
+            return Column(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('Verification History',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+                Expanded(
+                  child: !snap.hasData
+                      ? const Center(child: CircularProgressIndicator())
+                      : rows.isEmpty
+                          ? const Center(child: Text('No history yet.'))
+                          : ListView.separated(
+                              controller: scrollController,
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              itemCount: rows.length,
+                              separatorBuilder: (_, __) => const Divider(height: 1),
+                              itemBuilder: (context, i) {
+                                final r = rows[i];
+                                final details =
+                                    r['details'] as Map<String, dynamic>? ?? {};
+                                final newStatus =
+                                    details['newStatus'] as String? ?? '';
+                                final ts = r['timestamp'];
+                                final when = ts is Timestamp
+                                    ? '${ts.toDate().day}/${ts.toDate().month}/${ts.toDate().year}'
+                                    : '';
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(newStatus.isEmpty
+                                      ? (r['action'] as String? ?? '')
+                                      : 'Status → $newStatus'),
+                                  subtitle: Text(
+                                    'by ${r['adminId'] ?? 'unknown'} · $when',
+                                  ),
+                                );
+                              },
+                            ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<Map<String, dynamic>>>(
@@ -2810,8 +2977,16 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
             .toList();
 
         final pending = byStatus('pending');
-        final verified = byStatus('approved');
+        // Pre-existing bug fix: this previously called byStatus('approved'),
+        // which — since the alias-check above only fires for the literal
+        // 'verified' argument — filtered for a raw status of 'approved'.
+        // updateVerificationRequestStatus always normalises to 'verified'
+        // before writing, so no admin-approved request could ever appear
+        // here; the Verified tab was effectively always empty for anyone
+        // actually approved through this UI (blocking Suspend/Revoke too).
+        final verified = byStatus('verified');
         final rejected = byStatus('rejected');
+        final revoked = byStatus('revoked');
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2840,7 +3015,8 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
                     (0, 'Pending', pending.length, Icons.hourglass_empty_rounded, const Color(0xFFFF9500)),
                     (1, 'Verified', verified.length, Icons.verified_outlined, const Color(0xFF34C759)),
                     (2, 'Rejected', rejected.length, Icons.cancel_outlined, const Color(0xFFFF3B30)),
-                    (3, 'Analytics', null, Icons.bar_chart_outlined, const Color(0xFF007AFF)),
+                    (3, 'Revoked', revoked.length, Icons.remove_moderator_outlined, const Color(0xFF8E8E93)),
+                    (4, 'Analytics', null, Icons.bar_chart_outlined, const Color(0xFF007AFF)),
                   ]) ...[
                     if (entry.$1 > 0) const SizedBox(width: 8),
                     _VerSegPill(
@@ -2861,7 +3037,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
                   ? const Center(child: CircularProgressIndicator())
                   : snapshot.hasError
                       ? Center(child: Text('Error: ${snapshot.error}'))
-                      : _buildSegmentContent(context, pending, verified, rejected, identity),
+                      : _buildSegmentContent(context, pending, verified, rejected, revoked, identity),
             ),
           ],
         );
@@ -2874,6 +3050,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
     List<Map<String, dynamic>> pending,
     List<Map<String, dynamic>> verified,
     List<Map<String, dynamic>> rejected,
+    List<Map<String, dynamic>> revoked,
     List<Map<String, dynamic>> allIdentity,
   ) {
     switch (_segment) {
@@ -2885,9 +3062,14 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
             mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
+                tooltip: 'History',
+                icon: const Icon(Icons.history, color: AppColors.textSecondary),
+                onPressed: () => _showHistory(context, r['id'] as String),
+              ),
+              IconButton(
                 tooltip: 'Approve',
                 icon: const Icon(Icons.check_circle_outline, color: Colors.green),
-                onPressed: () => _setStatus(context, r['id'] as String, 'verified', userId: r['userId'] as String?),
+                onPressed: () => _approveWithNotes(context, r['id'] as String, userId: r['userId'] as String?),
               ),
               IconButton(
                 tooltip: 'Reject',
@@ -2901,22 +3083,70 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
         return _VerificationList(
           rows: verified,
           emptyLabel: 'No verified users.',
-          buildTrailing: (r) => TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.orange),
-            onPressed: () => _setStatus(context, r['id'] as String, 'suspended', userId: r['userId'] as String?),
-            child: const Text('Suspend'),
+          buildTrailing: (r) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'History',
+                icon: const Icon(Icons.history, color: AppColors.textSecondary),
+                onPressed: () => _showHistory(context, r['id'] as String),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.orange),
+                onPressed: () => _setStatus(context, r['id'] as String, 'suspended', userId: r['userId'] as String?),
+                child: const Text('Suspend'),
+              ),
+              // Verified Realtor Rewards, Part 9 — a true revoke, distinct
+              // from Suspend: strips the verified badge and every reward
+              // (bonus listings, featured eligibility) immediately, rather
+              // than just blocking the account.
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                onPressed: () => _revokeWithConfirmation(context, r['id'] as String, userId: r['userId'] as String?),
+                child: const Text('Revoke'),
+              ),
+            ],
           ),
         );
       case 2:
         return _VerificationList(
           rows: rejected,
           emptyLabel: 'No rejected requests.',
-          buildTrailing: (r) => TextButton(
-            onPressed: () => _setStatus(context, r['id'] as String, 'pending'),
-            child: const Text('Re-review'),
+          buildTrailing: (r) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'History',
+                icon: const Icon(Icons.history, color: AppColors.textSecondary),
+                onPressed: () => _showHistory(context, r['id'] as String),
+              ),
+              TextButton(
+                onPressed: () => _setStatus(context, r['id'] as String, 'pending'),
+                child: const Text('Re-review'),
+              ),
+            ],
           ),
         );
       case 3:
+        return _VerificationList(
+          rows: revoked,
+          emptyLabel: 'No revoked verifications.',
+          buildTrailing: (r) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'History',
+                icon: const Icon(Icons.history, color: AppColors.textSecondary),
+                onPressed: () => _showHistory(context, r['id'] as String),
+              ),
+              TextButton(
+                onPressed: () => _approveWithNotes(context, r['id'] as String, userId: r['userId'] as String?),
+                child: const Text('Re-verify'),
+              ),
+            ],
+          ),
+        );
+      case 4:
       default:
         return _VerificationAnalyticsView(allIdentity: allIdentity);
     }
@@ -2997,9 +3227,21 @@ class _VerificationList extends StatelessWidget {
       itemBuilder: (context, i) {
         final r = rows[i];
         final uid = r['userId'] as String? ?? '';
-        final url = r['documentUrl'] as String? ?? '';
         final level = r['requestedLevel'] as String? ?? '';
         final note = r['note'] as String? ?? '';
+
+        // Support both submission schemas: the legacy single-`documentUrl`
+        // flow (identity_verification_screen.dart) and the multi-document
+        // `documentUrls` flow (enhanced_verification_screen.dart) — the
+        // admin view previously only ever read `documentUrl`, so any
+        // enhanced-flow submission's documents were entirely invisible here.
+        final urls = <String>{
+          if ((r['documentUrl'] as String? ?? '').isNotEmpty)
+            r['documentUrl'] as String,
+          if (r['documentUrls'] is List)
+            ...(r['documentUrls'] as List).whereType<String>(),
+        }.toList();
+
         return Card(
           margin: const EdgeInsets.only(bottom: 4),
           child: Padding(
@@ -3029,33 +3271,18 @@ class _VerificationList extends StatelessWidget {
                     buildTrailing(r),
                   ],
                 ),
-                if (url.isNotEmpty) ...[
+                if (urls.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  GestureDetector(
-                    onTap: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => Dialog(
-                        child: InteractiveViewer(
-                          child: Image.network(url, fit: BoxFit.contain),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (var d = 0; d < urls.length; d++)
+                        _VerificationDocumentTile(
+                          url: urls[d],
+                          label: urls.length > 1 ? 'Document ${d + 1}' : null,
                         ),
-                      ),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(
-                        url,
-                        height: 140,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                          height: 60,
-                          color: Colors.grey.shade200,
-                          alignment: Alignment.center,
-                          child: const Text('Image unavailable',
-                              style: TextStyle(color: Colors.grey)),
-                        ),
-                      ),
-                    ),
+                    ],
                   ),
                 ] else
                   const Text('No document uploaded',
@@ -3065,6 +3292,92 @@ class _VerificationList extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _VerificationDocumentTile extends StatelessWidget {
+  const _VerificationDocumentTile({required this.url, this.label});
+  final String url;
+  final String? label;
+
+  bool get _isPdf => url.toLowerCase().split('?').first.endsWith('.pdf');
+
+  Future<void> _open(BuildContext context) async {
+    if (_isPdf) {
+      final uri = Uri.tryParse(url);
+      if (uri == null || !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Could not open document.')));
+        }
+      }
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        child: InteractiveViewer(
+          child: Image.network(url, fit: BoxFit.contain),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => _open(context),
+      child: SizedBox(
+        width: 140,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: _isPdf
+                  ? Container(
+                      height: 100,
+                      width: 140,
+                      color: Colors.red.shade50,
+                      alignment: Alignment.center,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.picture_as_pdf,
+                              color: Colors.red.shade400, size: 32),
+                          const SizedBox(height: 4),
+                          Text('View PDF',
+                              style: TextStyle(
+                                  fontSize: 11, color: Colors.red.shade700)),
+                        ],
+                      ),
+                    )
+                  : Image.network(
+                      url,
+                      height: 100,
+                      width: 140,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        height: 100,
+                        width: 140,
+                        color: Colors.grey.shade200,
+                        alignment: Alignment.center,
+                        child: const Text('Unavailable',
+                            style: TextStyle(color: Colors.grey, fontSize: 11)),
+                      ),
+                    ),
+            ),
+            if (label != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(label!,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary)),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -3291,6 +3604,11 @@ class _ModerationHubTabState extends State<_ModerationHubTab> {
                 label: Text('Listing reports'),
                 icon: Icon(Icons.flag_outlined, size: 18),
               ),
+              ButtonSegment<int>(
+                value: 2,
+                label: Text('Auto-moderation'),
+                icon: Icon(Icons.smart_toy_outlined, size: 18),
+              ),
             ],
             selected: {_segment},
             onSelectionChanged: (Set<int> s) => setState(() => _segment = s.first),
@@ -3378,7 +3696,7 @@ class _ModerationHubTabState extends State<_ModerationHubTab> {
               },
             ),
           ),
-        ] else
+        ] else if (_segment == 1)
           Expanded(
             child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: widget.admin.watchPropertyReports(),
@@ -3434,7 +3752,521 @@ class _ModerationHubTabState extends State<_ModerationHubTab> {
                 );
               },
             ),
+          )
+        else
+          Expanded(child: _AutoModerationPanel(admin: widget.admin)),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-moderation — Parts 2/7/8/9 of the content-moderation spec: stats,
+// blocked-words management, and a live moderation_logs feed, gated behind
+// its own `adminModerationDashboard` flag (shown regardless of the flag so
+// admins can turn it ON from here, but the banner makes the state obvious).
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _AutoModerationPanel extends StatefulWidget {
+  const _AutoModerationPanel({required this.admin});
+  final AdminRepository admin;
+
+  @override
+  State<_AutoModerationPanel> createState() => _AutoModerationPanelState();
+}
+
+class _AutoModerationPanelState extends State<_AutoModerationPanel>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs = TabController(length: 3, vsync: this);
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final flags = context.watch<ModerationFeatureFlagsProvider>();
+    final dashboardEnabled = flags.isEnabled(ModerationFlag.adminModerationDashboard);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!dashboardEnabled)
+          Container(
+            width: double.infinity,
+            color: Theme.of(context).colorScheme.errorContainer,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              'adminModerationDashboard flag is OFF — stats below may be stale for other admins. '
+              'Enable it in the Flags tab.',
+              style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+            ),
           ),
+        TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(text: 'Stats'),
+            Tab(text: 'Blocked words'),
+            Tab(text: 'Logs'),
+          ],
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabs,
+            children: [
+              _ModerationStatsTab(admin: widget.admin),
+              _BlockedWordsTab(admin: widget.admin),
+              _ModerationLogsTab(admin: widget.admin),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ModerationStatsTab extends StatefulWidget {
+  const _ModerationStatsTab({required this.admin});
+  final AdminRepository admin;
+
+  @override
+  State<_ModerationStatsTab> createState() => _ModerationStatsTabState();
+}
+
+class _ModerationStatsTabState extends State<_ModerationStatsTab> {
+  late Future<ModerationStats> _future = widget.admin.fetchModerationStats();
+
+  Future<void> _reload() async {
+    setState(() => _future = widget.admin.fetchModerationStats());
+    await _future;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: _reload,
+      child: FutureBuilder<ModerationStats>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return ListView(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text('Error loading stats: ${snapshot.error}'),
+                ),
+              ],
+            );
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final s = snapshot.data!;
+          Widget statTile(String label, String value) => Card(
+                margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(value, style: Theme.of(context).textTheme.headlineSmall),
+                      const SizedBox(height: 4),
+                      Text(label, style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              );
+
+          Widget countList(String title, List<ModerationStatCount> items) => Card(
+                margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 8),
+                      if (items.isEmpty)
+                        const Text('No data yet.', style: TextStyle(color: Colors.grey))
+                      else
+                        for (final item in items)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(item.key, overflow: TextOverflow.ellipsis),
+                                ),
+                                Text('${item.count}'),
+                              ],
+                            ),
+                          ),
+                    ],
+                  ),
+                ),
+              );
+
+          return ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              GridView.count(
+                crossAxisCount: 2,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                childAspectRatio: 1.8,
+                children: [
+                  statTile('Rejected today', '${s.rejectedToday}'),
+                  statTile('Rejected images (${s.sampleWindowDays}d)', '${s.mostRejectedImagesCount}'),
+                  statTile(
+                    'Avg. moderation time',
+                    s.averageModerationTimeMs != null ? '${s.averageModerationTimeMs} ms' : '—',
+                  ),
+                  statTile(
+                    'False positive rate',
+                    s.falsePositiveRate != null
+                        ? '${(s.falsePositiveRate! * 100).toStringAsFixed(1)}%'
+                        : 'N/A',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              countList('Most common violations', s.mostCommonViolations),
+              countList('Top offending users', s.topOffendingUsers),
+              countList('Most blocked words', s.mostBlockedWords),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  '${s.activeBlockedWordsCount} active blocked words · sampled ${s.sampleSize} logs '
+                  'from the last ${s.sampleWindowDays} days',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _BlockedWordsTab extends StatefulWidget {
+  const _BlockedWordsTab({required this.admin});
+  final AdminRepository admin;
+
+  @override
+  State<_BlockedWordsTab> createState() => _BlockedWordsTabState();
+}
+
+class _BlockedWordsTabState extends State<_BlockedWordsTab> {
+  Future<void> _openEditor({BlockedWord? existing}) async {
+    final wordController = TextEditingController(text: existing?.word ?? '');
+    final replacementController = TextEditingController(text: existing?.replacement ?? '');
+    final categoryController = TextEditingController(text: existing?.category ?? '');
+    String severity = existing?.severity ?? 'block';
+    bool enabled = existing?.enabled ?? true;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'Add blocked word' : 'Edit blocked word'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: wordController,
+                  decoration: const InputDecoration(labelText: 'Word'),
+                  autofocus: existing == null,
+                ),
+                TextField(
+                  controller: categoryController,
+                  decoration: const InputDecoration(labelText: 'Category (optional)'),
+                ),
+                TextField(
+                  controller: replacementController,
+                  decoration: const InputDecoration(labelText: 'Replacement (optional)'),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: severity,
+                  decoration: const InputDecoration(labelText: 'Severity'),
+                  items: const [
+                    DropdownMenuItem(value: 'block', child: Text('Block')),
+                    DropdownMenuItem(value: 'warn', child: Text('Warn')),
+                  ],
+                  onChanged: (v) => setDialogState(() => severity = v ?? 'block'),
+                ),
+                SwitchListTile(
+                  title: const Text('Enabled'),
+                  value: enabled,
+                  onChanged: (v) => setDialogState(() => enabled = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+    final word = wordController.text.trim();
+    if (word.isEmpty) return;
+
+    final entry = BlockedWord(
+      id: existing?.id ?? '',
+      word: word,
+      severity: severity,
+      replacement: replacementController.text.trim().isEmpty ? null : replacementController.text.trim(),
+      category: categoryController.text.trim().isEmpty ? null : categoryController.text.trim(),
+      enabled: enabled,
+    );
+
+    try {
+      if (existing == null) {
+        await widget.admin.addBlockedWord(entry);
+      } else {
+        await widget.admin.updateBlockedWord(entry);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _delete(BlockedWord word) async {
+    try {
+      await widget.admin.deleteBlockedWord(word.id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _openEditor(),
+        tooltip: 'Add blocked word',
+        child: const Icon(Icons.add),
+      ),
+      body: StreamBuilder<List<BlockedWord>>(
+        stream: widget.admin.watchBlockedWords(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final words = snapshot.data!;
+          if (words.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'No blocked words yet. Tap + to add one — admins manage this list here '
+                  'instead of publishing a new app build.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+          return ListView.separated(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
+            itemCount: words.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              final w = words[i];
+              return ListTile(
+                title: Text(w.word),
+                subtitle: Text(
+                  [
+                    w.severity,
+                    if (w.category != null) w.category!,
+                    if (!w.enabled) 'disabled',
+                  ].join(' · '),
+                ),
+                leading: Icon(
+                  w.severity == 'block' ? Icons.block : Icons.warning_amber,
+                  color: w.severity == 'block' ? Colors.red : Colors.orange,
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () => _openEditor(existing: w),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _delete(w),
+                    ),
+                  ],
+                ),
+                onTap: () => _openEditor(existing: w),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ModerationLogsTab extends StatefulWidget {
+  const _ModerationLogsTab({required this.admin});
+  final AdminRepository admin;
+
+  @override
+  State<_ModerationLogsTab> createState() => _ModerationLogsTabState();
+}
+
+class _ModerationLogsTabState extends State<_ModerationLogsTab> {
+  String? _decisionFilter = 'block';
+
+  Future<void> _review(ModerationLog log, bool falsePositive) async {
+    try {
+      await widget.admin.markModerationLogReviewed(
+        logId: log.id,
+        falsePositive: falsePositive,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(falsePositive ? 'Marked false positive' : 'Marked correct')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              for (final s in const [null, 'block', 'warn', 'pass'])
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilterChip(
+                    label: Text(s ?? 'All'),
+                    selected: _decisionFilter == s,
+                    onSelected: (_) => setState(() => _decisionFilter = s),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: StreamBuilder<List<ModerationLog>>(
+            stream: widget.admin.watchModerationLogs(decisionFilter: _decisionFilter),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Center(child: Text('Error: ${snapshot.error}'));
+              }
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final logs = snapshot.data!;
+              if (logs.isEmpty) {
+                return const Center(child: Text('No moderation events yet.'));
+              }
+              return ListView.separated(
+                padding: const EdgeInsets.all(12),
+                itemCount: logs.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, i) {
+                  final log = logs[i];
+                  return ExpansionTile(
+                    leading: Icon(
+                      log.decision == 'block'
+                          ? Icons.block
+                          : log.decision == 'warn'
+                              ? Icons.warning_amber
+                              : Icons.check_circle_outline,
+                      color: log.decision == 'block'
+                          ? Colors.red
+                          : log.decision == 'warn'
+                              ? Colors.orange
+                              : Colors.green,
+                    ),
+                    title: Text('${log.type} · ${log.decision} · ${log.source}'),
+                    subtitle: Text(
+                      log.reason ?? log.violations.join(', '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('User: ${log.userId ?? '—'}'),
+                            if (log.listingId != null) Text('Listing: ${log.listingId}'),
+                            if (log.messageId != null) Text('Message: ${log.messageId}'),
+                            if (log.reviewId != null) Text('Review: ${log.reviewId}'),
+                            Text('Confidence: ${(log.confidence * 100).toStringAsFixed(0)}%'),
+                            Text('Violations: ${log.violations.join(', ')}'),
+                            if (log.matchedTerms.isNotEmpty)
+                              Text('Matched terms: ${log.matchedTerms.join(', ')}'),
+                            if (log.latencyMs != null) Text('Latency: ${log.latencyMs} ms'),
+                            if (log.createdAt != null) Text('At: ${log.createdAt}'),
+                            const SizedBox(height: 8),
+                            if (log.isReviewed)
+                              Text(
+                                log.falsePositive ? 'Reviewed — false positive' : 'Reviewed — correct',
+                                style: const TextStyle(fontStyle: FontStyle.italic),
+                              )
+                            else
+                              Row(
+                                children: [
+                                  TextButton(
+                                    onPressed: () => _review(log, true),
+                                    child: const Text('Mark false positive'),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  FilledButton(
+                                    onPressed: () => _review(log, false),
+                                    child: const Text('Mark correct'),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ),
       ],
     );
   }
@@ -3651,6 +4483,7 @@ class _UsersTabState extends State<_UsersTab> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum _PropAction {
+  edit,
   approveMod,
   rejectMod,
   changeStatus,
@@ -3672,6 +4505,11 @@ class _PropertiesTabState extends State<_PropertiesTab> {
   final _search = TextEditingController();
   String? _statusFilter;   // null = all non-deleted
   bool _includeDeleted = false;
+
+  // ── Bulk selection — mirrors iOS AdminPropertiesView's selection mode
+  // (multi-select archive/take-down/delete) ─────────────────────────────
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = {};
 
   static const _statuses = ['active', 'pending', 'archived', 'rejected', 'expired'];
 
@@ -3706,7 +4544,12 @@ class _PropertiesTabState extends State<_PropertiesTab> {
     }
   }
 
-  Future<void> _changeStatus(BuildContext context, String id, String title) async {
+  Future<void> _changeStatus(
+    BuildContext context,
+    String id,
+    String title, [
+    String? currentStatus,
+  ]) async {
     final chosen = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -3737,7 +4580,8 @@ class _PropertiesTabState extends State<_PropertiesTab> {
     );
     if (chosen == null || !context.mounted) return;
     try {
-      await widget.admin.updatePropertyStatus(propertyId: id, status: chosen);
+      await widget.admin.updatePropertyStatus(
+          propertyId: id, status: chosen, oldStatus: currentStatus);
       if (context.mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Status → $chosen')));
@@ -3749,9 +4593,11 @@ class _PropertiesTabState extends State<_PropertiesTab> {
     }
   }
 
-  Future<void> _archive(BuildContext context, String id) async {
+  Future<void> _archive(BuildContext context, String id,
+      [String? currentStatus]) async {
     try {
-      await widget.admin.updatePropertyStatus(propertyId: id, status: 'archived');
+      await widget.admin.updatePropertyStatus(
+          propertyId: id, status: 'archived', oldStatus: currentStatus);
       if (context.mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('Listing archived')));
@@ -3813,6 +4659,108 @@ class _PropertiesTabState extends State<_PropertiesTab> {
     }
   }
 
+  /// Mirrors iOS `EditPropertyView(isAdminContext: true)` — lets an admin
+  /// edit any listing's fields directly, not just moderate its status.
+  Future<void> _edit(BuildContext context, String id) async {
+    final adminUid = FirebaseAuth.instance.currentUser?.uid;
+    if (adminUid == null) return;
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => EditPropertyScreen(
+        propertyId: id,
+        userId: adminUid,
+        isAdminContext: true,
+      ),
+    ));
+  }
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  Future<void> _bulkArchive(BuildContext context) async {
+    final ids = _selectedIds.toList();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive selected listings?'),
+        content: Text('${ids.length} listing${ids.length == 1 ? '' : 's'} will be archived.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Archive')),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    var failures = 0;
+    for (final id in ids) {
+      try {
+        await widget.admin.updatePropertyStatus(propertyId: id, status: 'archived');
+      } catch (_) {
+        failures++;
+      }
+    }
+    if (!context.mounted) return;
+    setState(() {
+      _selectedIds.clear();
+      _selectionMode = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(failures == 0
+            ? 'Archived ${ids.length} listings'
+            : 'Archived ${ids.length - failures} of ${ids.length} (some failed)')));
+  }
+
+  Future<void> _bulkSoftDelete(BuildContext context) async {
+    final ids = _selectedIds.toList();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove selected listings?'),
+        content: Text(
+            '${ids.length} listing${ids.length == 1 ? '' : 's'} will be soft-deleted (hidden from search).'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    var failures = 0;
+    for (final id in ids) {
+      try {
+        await widget.admin.adminSoftDeleteProperty(id);
+      } catch (_) {
+        failures++;
+      }
+    }
+    if (!context.mounted) return;
+    setState(() {
+      _selectedIds.clear();
+      _selectionMode = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(failures == 0
+            ? 'Removed ${ids.length} listings'
+            : 'Removed ${ids.length - failures} of ${ids.length} (some failed)')));
+  }
+
   Future<String?> _promptReason(BuildContext context) async {
     final c = TextEditingController();
     final ok = await showDialog<bool>(
@@ -3866,17 +4814,54 @@ class _PropertiesTabState extends State<_PropertiesTab> {
             // ── Search ────────────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-              child: TextField(
-                controller: _search,
-                decoration: const InputDecoration(
-                  hintText: 'Search title, city, owner',
-                  prefixIcon: Icon(Icons.search),
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onChanged: (_) => setState(() {}),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _search,
+                      decoration: const InputDecoration(
+                        hintText: 'Search title, city, owner',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    tooltip: _selectionMode ? 'Cancel selection' : 'Select multiple',
+                    icon: Icon(_selectionMode ? Icons.close : Icons.checklist_rounded),
+                    onPressed: _toggleSelectionMode,
+                  ),
+                ],
               ),
             ),
+            if (_selectionMode)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                child: Row(
+                  children: [
+                    Text('${_selectedIds.length} selected',
+                        style: Theme.of(context).textTheme.bodySmall),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: _selectedIds.isEmpty
+                          ? null
+                          : () => _bulkArchive(context),
+                      icon: const Icon(Icons.archive_outlined, size: 18),
+                      label: const Text('Archive'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _selectedIds.isEmpty
+                          ? null
+                          : () => _bulkSoftDelete(context),
+                      icon: Icon(Icons.delete_outline, size: 18, color: AppColors.error),
+                      label: Text('Remove', style: TextStyle(color: AppColors.error)),
+                    ),
+                  ],
+                ),
+              ),
             // ── Status filter chips ───────────────────────────────────────
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -3928,12 +4913,21 @@ class _PropertiesTabState extends State<_PropertiesTab> {
                     final status = r['status'] as String? ?? '';
                     final mod = r['moderationStatus'] as String?;
                     final deleted = r['deleted'] as bool? ?? false;
+                    final owner = r['ownerName'] as String? ?? '';
 
                     return ListTile(
+                      leading: _selectionMode
+                          ? Checkbox(
+                              value: _selectedIds.contains(id),
+                              onChanged: (_) => _toggleSelected(id),
+                            )
+                          : null,
+                      onTap: _selectionMode ? () => _toggleSelected(id) : null,
                       title: Text(title,
                           maxLines: 1, overflow: TextOverflow.ellipsis),
                       subtitle: Text(
                         [
+                          if (owner.isNotEmpty) 'Owner: $owner',
                           if (city.isNotEmpty) city,
                           if (status.isNotEmpty) 'status: $status',
                           if (mod != null) 'mod: $mod',
@@ -3941,10 +4935,14 @@ class _PropertiesTabState extends State<_PropertiesTab> {
                         ].join(' · '),
                         maxLines: 2,
                       ),
-                      trailing: PopupMenuButton<_PropAction>(
+                      trailing: _selectionMode
+                          ? null
+                          : PopupMenuButton<_PropAction>(
                         icon: const Icon(Icons.more_vert),
                         onSelected: (action) async {
                           switch (action) {
+                            case _PropAction.edit:
+                              await _edit(context, id);
                             case _PropAction.approveMod:
                               await _modStatus(context, id, 'approved');
                             case _PropAction.rejectMod:
@@ -3953,9 +4951,9 @@ class _PropertiesTabState extends State<_PropertiesTab> {
                               await _modStatus(context, id, 'rejected',
                                   reason: reason);
                             case _PropAction.changeStatus:
-                              await _changeStatus(context, id, title);
+                              await _changeStatus(context, id, title, status);
                             case _PropAction.archive:
-                              await _archive(context, id);
+                              await _archive(context, id, status);
                             case _PropAction.trustVerify:
                               await _trustScore(context, id,
                                   'photo_auth_verified', 'Photos verified (+3)');
@@ -3967,6 +4965,15 @@ class _PropertiesTabState extends State<_PropertiesTab> {
                           }
                         },
                         itemBuilder: (_) => const [
+                          PopupMenuItem(
+                            value: _PropAction.edit,
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.edit_outlined),
+                              title: Text('Edit listing'),
+                            ),
+                          ),
+                          PopupMenuDivider(),
                           PopupMenuItem(
                             value: _PropAction.approveMod,
                             child: ListTile(
@@ -4201,15 +5208,17 @@ class _DisputeQueueAdmin extends StatelessWidget {
   const _DisputeQueueAdmin({required this.admin});
   final AdminRepository admin;
 
-  Future<void> _updateStatus(BuildContext ctx, String id, String status) async {
+  /// Self-assigns the dispute (mirrors iOS `assignDispute`) — the actual
+  /// resolve/dismiss decision requires a resolution type + note, which is
+  /// handled in [DisputeDetailScreen]'s resolve sheet, not here.
+  Future<void> _assignToMe(BuildContext ctx, String id) async {
+    final adminId = FirebaseAuth.instance.currentUser?.uid;
+    if (adminId == null) return;
     try {
-      await FirebaseFirestore.instance
-          .collection('disputes')
-          .doc(id)
-          .update({'status': status, 'resolvedAt': FieldValue.serverTimestamp()});
+      await ctx.read<DisputeService>().assignDispute(disputeId: id, adminId: adminId);
       if (ctx.mounted) {
-        ScaffoldMessenger.of(ctx).showSnackBar(
-            SnackBar(content: Text('Dispute marked $status')));
+        ScaffoldMessenger.of(ctx)
+            .showSnackBar(const SnackBar(content: Text('Assigned to you')));
       }
     } catch (e) {
       if (ctx.mounted) {
@@ -4219,12 +5228,21 @@ class _DisputeQueueAdmin extends StatelessWidget {
     }
   }
 
+  void _openDetail(BuildContext ctx, String id) {
+    Navigator.of(ctx).push(MaterialPageRoute<void>(
+      builder: (_) => DisputeDetailScreen(disputeId: id, isAdmin: true),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
+      // Dispute docs are written with `openedAt` (see functions/dispute-functions.js
+      // `openDispute`), not `createdAt` — ordering by the wrong field silently
+      // excluded every dispute from this query.
       stream: FirebaseFirestore.instance
           .collection('disputes')
-          .orderBy('createdAt', descending: true)
+          .orderBy('openedAt', descending: true)
           .limit(100)
           .snapshots(),
       builder: (context, snap) {
@@ -4244,11 +5262,12 @@ class _DisputeQueueAdmin extends StatelessWidget {
             final id = docs[i].id;
             final status = d['status'] as String? ?? 'open';
             final reason = d['reason'] as String? ?? '—';
-            final property = d['propertyTitle'] as String? ?? '—';
-            final ts = d['createdAt'];
+            final propertyId = d['propertyId'] as String? ?? '—';
+            final ts = d['openedAt'];
             final date = ts is Timestamp
                 ? DateFormat('MMM d, y').format(ts.toDate())
                 : '—';
+            final assigned = d['assignedAdminId'] as String?;
             final statusColor = status == 'open'
                 ? Colors.blue
                 : status == 'under_review'
@@ -4257,78 +5276,71 @@ class _DisputeQueueAdmin extends StatelessWidget {
                         ? Colors.green
                         : Colors.grey;
 
-            return Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).cardColor,
-                borderRadius: BorderRadius.circular(10),
-                boxShadow: [
-                  BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 3),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(reason,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      _StatusChipAdmin(status: status, color: statusColor),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text('Property: $property',
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary)),
-                  Text('Filed: $date',
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary)),
-                  if (d['description'] != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        d['description'] as String,
-                        style: const TextStyle(
-                            fontSize: 12, color: AppColors.textSecondary),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+            return InkWell(
+              onTap: () => _openDetail(ctx, id),
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).cardColor,
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 3),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(reason.replaceAll('_', ' '),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                        _StatusChipAdmin(status: status, color: statusColor),
+                      ],
                     ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      if (status == 'open') ...[
-                        _AdminActionButton(
-                          label: 'Review',
-                          color: Colors.orange,
-                          onTap: () =>
-                              _updateStatus(ctx, id, 'under_review'),
+                    const SizedBox(height: 4),
+                    Text('Property: $propertyId',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary)),
+                    Text('Filed: $date'
+                        '${assigned != null ? ' · Assigned' : ''}',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary)),
+                    if (d['description'] != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          d['description'] as String,
+                          style: const TextStyle(
+                              fontSize: 12, color: AppColors.textSecondary),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
+                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        if (assigned == null)
+                          _AdminActionButton(
+                            label: 'Assign to me',
+                            color: Colors.orange,
+                            onTap: () => _assignToMe(ctx, id),
+                          ),
                         const SizedBox(width: 8),
-                      ],
-                      if (status != 'resolved')
                         _AdminActionButton(
-                          label: 'Resolve',
+                          label: status == 'resolved' ? 'View' : 'Open & resolve',
                           color: Colors.green,
-                          onTap: () => _updateStatus(ctx, id, 'resolved'),
-                        ),
-                      if (status == 'open') ...[
-                        const SizedBox(width: 8),
-                        _AdminActionButton(
-                          label: 'Dismiss',
-                          color: Colors.grey,
-                          onTap: () =>
-                              _updateStatus(ctx, id, 'dismissed'),
+                          onTap: () => _openDetail(ctx, id),
                         ),
                       ],
-                    ],
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             );
           },

@@ -144,6 +144,7 @@ class RealtorUpgradePromptScreen extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.close),
+            tooltip: 'Close',
             onPressed: () => Navigator.of(context).pop(),
           ),
         ],

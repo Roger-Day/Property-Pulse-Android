@@ -208,6 +208,26 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
     });
   }
 
+  /// Clones a unit type's fields into a new one inserted right after it —
+  /// mirrors iOS `UnitTypeEditorCard.onDuplicate`, for quickly adding near-
+  /// identical layouts (e.g. "1BR City View" → "1BR City View (Floor 2)")
+  /// without re-entering every field.
+  void _duplicateUnitType(int index) {
+    final source = _unitForms[index];
+    final copy = _UnitTypeForm(id: 'ut_${DateTime.now().microsecondsSinceEpoch}')
+      ..name.text = source.name.text
+      ..bedrooms.text = source.bedrooms.text
+      ..bathrooms.text = source.bathrooms.text
+      ..price.text = source.price.text
+      ..currency.text = source.currency.text
+      ..sqft.text = source.sqft.text
+      ..totalUnits.text = source.totalUnits.text
+      ..availableUnits.text = source.availableUnits.text
+      ..interiorUrls.text = source.interiorUrls.text
+      ..floorUrls.text = source.floorUrls.text;
+    setState(() => _unitForms.insert(index + 1, copy));
+  }
+
   Future<void> _pickExpiryDate() async {
     final initial = _expiresAt ?? DateTime.now();
     final d = await showDatePicker(
@@ -652,6 +672,11 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
                                 'Unit type ${index + 1}',
                                 style: const TextStyle(fontWeight: FontWeight.w700),
                               ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.copy_outlined),
+                              onPressed: () => _duplicateUnitType(index),
+                              tooltip: 'Duplicate',
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete_outline),

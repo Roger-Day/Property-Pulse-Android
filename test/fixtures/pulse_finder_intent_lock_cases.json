@@ -1,0 +1,76 @@
+{
+  "_comment": "Canonical parity fixture for PulseFinderIntentLock (Phase 3.2) — the deterministic gate that decides whether Pulse Finder's search intent is allowed to change on a given turn. Loaded by BOTH platforms' test suites: Flutter reads this file directly (test/unit/pulse_finder_intent_lock_test.dart), and iOS's PulseFinderIntentLockTests.swift reads it from this same path on disk (walking up from its own source location to the sibling 'Property Pulse Android' repo) since the two apps live in separate git repos with no shared package. If this file's cases and PulseFinderIntent.swift/.dart's actual behavior ever diverge, both platforms' tests fail — this is the guardrail the AI platform audit flagged as missing: parity between the two hand-mirrored implementations was previously enforced only by developer discipline, with nothing that would fail a build if one side drifted. Edit this file, not the individual test files, when adding a new case — both test files iterate it rather than hardcoding these examples inline.",
+  "detectIntentKeyword": [
+    { "input": "I want to buy a house", "expected": "buy" },
+    { "input": "looking to rent an apartment", "expected": "rent" },
+    { "input": "I need a short stay", "expected": "shortStay" },
+    { "input": "an airbnb for the weekend", "expected": "shortStay" },
+    { "input": "need office space", "expected": "commercial" },
+    { "input": "interested in a new development", "expected": "development" },
+    { "input": "any auction listings", "expected": "auction" },
+    { "input": "a vacation rental in Negril", "expected": "shortStay" },
+    { "input": "short-term rental please", "expected": "shortStay" },
+    { "input": "two bedrooms and a pool", "expected": null },
+    { "input": "", "expected": null },
+    { "input": "help me find a first home", "expected": "buy" },
+    { "input": "looking for a starter home", "expected": "buy" },
+    { "input": "find my dream home", "expected": "buy" },
+    { "input": "I'd love to own a home in Kingston", "expected": "buy" },
+    { "input": "looking for my first place", "expected": null },
+    { "input": "my first apartment", "expected": null }
+  ],
+  "isExplicitIntentChange": [
+    { "input": "I actually want to buy.", "expected": true },
+    { "input": "Forget Airbnb.", "expected": true },
+    { "input": "Let's look at rentals instead.", "expected": true },
+    { "input": "I want to buy a house", "expected": false },
+    { "input": "Looking for a short stay", "expected": false },
+    { "input": "actually, make it 3 bedrooms instead", "expected": false },
+    { "input": "", "expected": false },
+    { "input": "   ", "expected": false }
+  ],
+  "resolve": [
+    {
+      "currentIntent": null,
+      "proposedIntent": "shortStay",
+      "latestUserMessage": "I need a short stay",
+      "expected": "shortStay"
+    },
+    {
+      "currentIntent": null,
+      "proposedIntent": "buy",
+      "latestUserMessage": "a house please",
+      "expected": "buy"
+    },
+    {
+      "currentIntent": "shortStay",
+      "proposedIntent": "buy",
+      "latestUserMessage": "Apartment",
+      "expected": "shortStay"
+    },
+    {
+      "currentIntent": "shortStay",
+      "proposedIntent": null,
+      "latestUserMessage": "Apartment",
+      "expected": "shortStay"
+    },
+    {
+      "currentIntent": "shortStay",
+      "proposedIntent": "shortStay",
+      "latestUserMessage": "St. James",
+      "expected": "shortStay"
+    },
+    {
+      "currentIntent": "shortStay",
+      "proposedIntent": "buy",
+      "latestUserMessage": "I actually want to buy.",
+      "expected": "buy"
+    },
+    {
+      "currentIntent": "buy",
+      "proposedIntent": "buy",
+      "latestUserMessage": "actually, forget it, let's keep buying",
+      "expected": "buy"
+    }
+  ]
+}

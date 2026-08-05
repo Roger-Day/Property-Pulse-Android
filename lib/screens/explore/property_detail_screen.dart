@@ -17,6 +17,7 @@ import '../../theme/pp_animations.dart';
 import '../../constants/app_constants.dart';
 import '../../models/airbnb_info_model.dart';
 import '../../models/appointment_row.dart';
+import '../../models/cancellation_policy.dart';
 import '../../models/property_document_model.dart';
 import '../../models/property_model.dart';
 import '../../providers/auth_provider.dart';
@@ -1578,6 +1579,56 @@ class _AirbnbMerchandisingSectionState
           ),
           const SizedBox(height: 16),
         ],
+        // Booking information — check-in/out, max guests, cancellation
+        // policy. Previously modeled on `AirbnbInfoModel` but never
+        // rendered anywhere on the detail screen.
+        Text(
+          'Booking information',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _BookingInfoRow(
+                icon: Icons.login_rounded,
+                label: 'Check-in',
+                value: _formatClockTime(a.checkInTime),
+              ),
+              _BookingInfoRow(
+                icon: Icons.logout_rounded,
+                label: 'Check-out',
+                value: _formatClockTime(a.checkOutTime),
+              ),
+              _BookingInfoRow(
+                icon: Icons.people_outline_rounded,
+                label: 'Max guests',
+                value: '${a.maxGuests}',
+              ),
+              _BookingInfoRow(
+                icon: Icons.policy_outlined,
+                label: 'Cancellation policy',
+                value: CancellationPolicy.builtinById(a.cancellationPolicy)
+                        ?.name ??
+                    a.cancellationPolicy,
+                subtitle:
+                    CancellationPolicy.builtinById(a.cancellationPolicy)
+                        ?.description,
+                isLast: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         if (widget.showBooking) ...[
           Text(
             'Price breakdown',
@@ -1721,6 +1772,75 @@ class _AirbnbMerchandisingSectionState
     if (p >= 1) return 0;
     return base * (p / (1.0 - p));
   }
+
+  /// "15:00" → "3:00 PM". Falls back to the raw string if it's not in the
+  /// expected "HH:mm" shape.
+  String _formatClockTime(String raw) {
+    final parts = raw.split(':');
+    if (parts.length != 2) return raw;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return raw;
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final hour12 = hour % 12 == 0 ? 12 : hour % 12;
+    return '$hour12:${minute.toString().padLeft(2, '0')} $period';
+  }
+}
+
+class _BookingInfoRow extends StatelessWidget {
+  const _BookingInfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.subtitle,
+    this.isLast = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final String? subtitle;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: AppColors.textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  textAlign: TextAlign.end,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                if (subtitle != null && subtitle!.trim().isNotEmpty)
+                  Text(
+                    subtitle!,
+                    textAlign: TextAlign.end,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _PriceLine extends StatelessWidget {
@@ -1833,11 +1953,14 @@ class _OwnerListingToolsCard extends StatefulWidget {
 class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
   late String _status;
   bool _busy = false;
+  bool _markingActive = false;
+  late bool _flaggedForInactivity;
 
   @override
   void initState() {
     super.initState();
     _status = widget.property.status;
+    _flaggedForInactivity = widget.property.isFlaggedForInactivity;
   }
 
   /// Local dropdown state takes priority once the lister has just changed it
@@ -1846,14 +1969,15 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
   /// synced yet by the Cloud Function.
   bool get _isExpired => _status == 'expired' || widget.property.isExpired;
 
-  static const _statuses = [
-    'available',
-    'pending',
-    'sold',
-    'rented',
-    'expired',
-    'archived',
-  ];
+  /// Current status plus whatever it's legally allowed to become next —
+  /// never offers a dead-end selection (mirrors
+  /// `PropertyRepository.validNextStatuses`, which enforces the same rules
+  /// server-round-trip side when the change is submitted).
+  List<String> get _selectableStatuses => [
+        _status,
+        ...PropertyRepository.validNextStatuses(_status)
+            .where((s) => s != _status),
+      ];
 
   String _label(String s) {
     switch (s) {
@@ -1894,11 +2018,17 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
   }
 
   Future<void> _updateStatus(String next) async {
+    final uid = context.read<AuthProvider>().user?.uid;
+    if (uid == null) return;
+    final isAdmin = context.read<UserRoleProvider>().isAdmin;
+
     setState(() => _busy = true);
     try {
-      await context.read<PropertyRepository>().updateProperty(
-            widget.property.id,
-            {'status': next},
+      await context.read<PropertyRepository>().updatePropertyStatus(
+            propertyId: widget.property.id,
+            newStatus: next,
+            currentUserId: uid,
+            isAdmin: isAdmin,
           );
       if (!mounted) return;
       setState(() => _status = next);
@@ -1915,9 +2045,40 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
     }
   }
 
+  Future<void> _markActive() async {
+    final uid = context.read<AuthProvider>().user?.uid;
+    if (uid == null) return;
+    final isAdmin = context.read<UserRoleProvider>().isAdmin;
+
+    setState(() => _markingActive = true);
+    try {
+      await context.read<PropertyRepository>().markPropertyActive(
+            propertyId: widget.property.id,
+            currentUserId: uid,
+            isAdmin: isAdmin,
+          );
+      if (!mounted) return;
+      setState(() {
+        _status = 'available';
+        _flaggedForInactivity = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Listing marked as active')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    } finally {
+      if (mounted) setState(() => _markingActive = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final property = widget.property;
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -1992,12 +2153,12 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
             ],
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _statuses.contains(_status) ? _status : 'available',
+              value: _status,
               decoration: const InputDecoration(
                 labelText: 'Listing status',
                 border: OutlineInputBorder(),
               ),
-              items: _statuses
+              items: _selectableStatuses
                   .map(
                     (s) => DropdownMenuItem(
                       value: s,
@@ -2022,6 +2183,91 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Text('Renew listing'),
+              ),
+            ],
+            // ── Nudge / visibility-reduction status — mirrors iOS
+            // PropertyMetaSection.nudgeStatusSection ──────────────────────
+            if (property.nudgeCount > 0 || property.isVisibilityReduced) ...[
+              const SizedBox(height: 12),
+              if (property.nudgeCount > 0)
+                Row(
+                  children: [
+                    Icon(Icons.notifications_active_outlined,
+                        size: 16, color: AppColors.warning),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Nudge sent ${property.nudgeCount}x'
+                      '${property.nudgeCount >= 2 ? ' ⚠️' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppColors.warning,
+                          ),
+                    ),
+                  ],
+                ),
+              if (property.isVisibilityReduced) ...[
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.visibility_off_outlined,
+                          size: 18, color: AppColors.error),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Visibility reduced due to inactivity',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppColors.error,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+            if (property.statusUpdateRemindersSent) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Status update reminder sent',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+            if (property.autoDowngradeCount > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Auto-downgraded ${property.autoDowngradeCount}x for inactivity',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+            if (_flaggedForInactivity) ...[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _markingActive ? null : _markActive,
+                icon: _markingActive
+                    ? const SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_circle_outline, size: 18),
+                label: const Text('Mark as Active'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.success,
+                  side: BorderSide(color: AppColors.success),
+                ),
               ),
             ],
           ],
@@ -3761,6 +4007,87 @@ class _BookStaySheetState extends State<_BookStaySheet> {
   int _guests = 1;
   bool _booking = false;
 
+  /// Dates already booked (confirmed/pending) or host-blocked for this
+  /// listing, as `yyyy-MM-dd` keys — disables them in the date pickers so a
+  /// guest can't select an unavailable range in the first place, instead of
+  /// only finding out the booking failed after filling out the whole form.
+  Set<String> _unavailableDates = {};
+  bool _loadingAvailability = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAvailability();
+  }
+
+  String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  Future<void> _loadAvailability() async {
+    try {
+      final db = FirebaseFirestore.instance;
+      final unavailable = <String>{};
+
+      Future<void> addBookingsFrom(String collection) async {
+        final snap = await db
+            .collection(collection)
+            .where('propertyId', isEqualTo: widget.property.id)
+            .where('status', whereIn: ['confirmed', 'pending'])
+            .get();
+        for (final doc in snap.docs) {
+          final m = doc.data();
+          final checkIn = (m['checkIn'] as Timestamp?)?.toDate() ??
+              (m['checkInDate'] as Timestamp?)?.toDate();
+          final checkOut = (m['checkOut'] as Timestamp?)?.toDate() ??
+              (m['checkOutDate'] as Timestamp?)?.toDate();
+          if (checkIn == null || checkOut == null) continue;
+          for (var d = checkIn;
+              d.isBefore(checkOut);
+              d = d.add(const Duration(days: 1))) {
+            unavailable.add(_dateKey(d));
+          }
+        }
+      }
+
+      await Future.wait([
+        addBookingsFrom('bookings'),
+        addBookingsFrom('host_bookings'),
+      ]);
+
+      final hostId = widget.property.hostUserId?.trim();
+      if (hostId != null && hostId.isNotEmpty) {
+        final blockedSnap = await db
+            .collection('hostBlockedDates')
+            .where('hostId', isEqualTo: hostId)
+            .get();
+        for (final doc in blockedSnap.docs) {
+          final date = doc.data()['date'] as String?;
+          if (date != null) unavailable.add(date);
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _unavailableDates = unavailable;
+        _loadingAvailability = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingAvailability = false);
+    }
+  }
+
+  bool _isSelectable(DateTime day) =>
+      !_unavailableDates.contains(_dateKey(day));
+
+  /// True if every night in `[checkIn, checkOut)` is free.
+  bool _isRangeAvailable(DateTime checkIn, DateTime checkOut) {
+    for (var d = checkIn; d.isBefore(checkOut); d = d.add(const Duration(days: 1))) {
+      if (!_isSelectable(d)) return false;
+    }
+    return true;
+  }
+
   int get _nights => _checkOut.difference(_checkIn).inDays.clamp(1, 365);
 
   String _formatDate(DateTime d) =>
@@ -3781,27 +4108,64 @@ class _BookStaySheetState extends State<_BookStaySheet> {
     'Dec',
   ];
 
+  /// The `initialDate` passed to [showDatePicker] must itself satisfy
+  /// `selectableDayPredicate` or the picker asserts — walk forward to the
+  /// first free day on or after [from].
+  DateTime _firstSelectableFrom(DateTime from) {
+    var d = from;
+    var guard = 0;
+    while (!_isSelectable(d) && guard < 400) {
+      d = d.add(const Duration(days: 1));
+      guard++;
+    }
+    return d;
+  }
+
   Future<void> _pickDate({required bool isCheckIn}) async {
     final now = DateTime.now();
     final initial = isCheckIn ? _checkIn : _checkOut;
     final first = isCheckIn ? now : _checkIn.add(const Duration(days: 1));
+    final safeInitial =
+        _firstSelectableFrom(initial.isBefore(first) ? first : initial);
     final picked = await showDatePicker(
       context: context,
-      initialDate: initial.isBefore(first) ? first : initial,
+      initialDate: safeInitial,
       firstDate: first,
       lastDate: now.add(const Duration(days: 365)),
+      selectableDayPredicate: _isSelectable,
     );
     if (picked == null) return;
-    setState(() {
-      if (isCheckIn) {
-        _checkIn = picked;
-        if (!_checkOut.isAfter(_checkIn)) {
-          _checkOut = _checkIn.add(const Duration(days: 1));
-        }
-      } else {
-        _checkOut = picked;
+
+    if (isCheckIn) {
+      var nextCheckOut = _checkOut;
+      if (!nextCheckOut.isAfter(picked)) {
+        nextCheckOut = picked.add(const Duration(days: 1));
       }
-    });
+      if (!_isRangeAvailable(picked, nextCheckOut)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'That check-in date overlaps an existing booking. Pick a shorter stay or a different date.')),
+        );
+        return;
+      }
+      setState(() {
+        _checkIn = picked;
+        _checkOut = nextCheckOut;
+      });
+    } else {
+      if (!_isRangeAvailable(_checkIn, picked)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'Some nights in that range are already booked. Pick a shorter stay.')),
+        );
+        return;
+      }
+      setState(() => _checkOut = picked);
+    }
   }
 
   Future<void> _book() async {
@@ -3904,6 +4268,25 @@ class _BookStaySheetState extends State<_BookStaySheet> {
                 ),
               ],
             ),
+            if (_loadingAvailability) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Checking availability…',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 16),
 
             // Guest count

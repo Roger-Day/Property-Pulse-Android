@@ -1,0 +1,61 @@
+{
+  "_comment": "Canonical parity fixture for the short-stay classification getters on the Property model (Android PropertyModel.isShortStayListing/isShortStayHostListing, iOS Property.isShortStayListing/isShortStayHostListing). Loaded by BOTH platforms' test suites: Flutter reads this file directly (test/unit/property_model_test.dart), and iOS's PropertyShortStayHostListingParityTests.swift reads it from this same path on disk (walking up from its own source location to the sibling 'Property Pulse Android' repo) since the two apps live in separate git repos with no shared package. Added after a real production bug: an ordinary for-rent apartment still carried a stale legacy `airbnbInfo` map from an older creation flow, and Android's My Listings filter used the broader isShortStayListing getter (which treats airbnbInfo as evidence of a short-stay listing) instead of isShortStayHostListing (which deliberately does not), so the listing vanished from My Listings entirely. If this file's cases and either platform's actual getter behavior ever diverge, both platforms' tests fail. Edit this file, not the individual test files, when adding a new case.",
+  "cases": [
+    {
+      "description": "explicit airbnb propertyType is short-stay under both getters",
+      "propertyType": "airbnb",
+      "listingType": "for_rent",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": true,
+      "expectedIsShortStayHostListing": true
+    },
+    {
+      "description": "listingType short_stay with a plain propertyType is short-stay under both getters",
+      "propertyType": "apartment",
+      "listingType": "short_stay",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": true,
+      "expectedIsShortStayHostListing": true
+    },
+    {
+      "description": "a plain for-sale house is not short-stay under either getter",
+      "propertyType": "house",
+      "listingType": "for_sale",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": false,
+      "expectedIsShortStayHostListing": false
+    },
+    {
+      "description": "a plain long-term rental is not short-stay under either getter",
+      "propertyType": "apartment",
+      "listingType": "for_rent",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": false,
+      "expectedIsShortStayHostListing": false
+    },
+    {
+      "description": "REGRESSION: an ordinary for-rent listing with a stale legacy airbnbInfo map must NOT be treated as short-stay for management-screen routing, even though the broader search-universe getter does flag it",
+      "propertyType": "apartment",
+      "listingType": "for_rent",
+      "hasAirbnbInfo": true,
+      "expectedIsShortStayListing": true,
+      "expectedIsShortStayHostListing": false
+    },
+    {
+      "description": "a genuine short-stay listing with no airbnbInfo is still caught by both getters",
+      "propertyType": "house",
+      "listingType": "short_stay",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": true,
+      "expectedIsShortStayHostListing": true
+    },
+    {
+      "description": "listingType airbnb (legacy alias) with a plain propertyType is short-stay under both getters",
+      "propertyType": "house",
+      "listingType": "airbnb",
+      "hasAirbnbInfo": false,
+      "expectedIsShortStayListing": true,
+      "expectedIsShortStayHostListing": true
+    }
+  ]
+}

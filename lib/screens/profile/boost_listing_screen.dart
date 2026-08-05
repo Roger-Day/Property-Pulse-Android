@@ -4,6 +4,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../providers/feature_flags_provider.dart';
 import '../../services/in_app_billing_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +23,50 @@ class BoostListingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Remote kill-switch — mirrors iOS `PremiumBoostView`'s "coming soon"
+    // gate on `FeatureFlags.boostedListingsEnabled` (off by default at
+    // launch). Without this, Android would keep selling boosts even while
+    // ops has this flag off for iOS.
+    final boostedListingsEnabled =
+        context.watch<FeatureFlagsProvider>().boostedListingsEnabled;
+    if (!boostedListingsEnabled) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          backgroundColor: AppColors.surface,
+          title: const Text('Feature this Listing'),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.workspace_premium_outlined,
+                    size: 56, color: AppColors.textSecondary),
+                const SizedBox(height: 16),
+                Text(
+                  'Coming Soon',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Featured placement isn\'t available yet. Check back soon.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: AppColors.textSecondary),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -147,6 +192,29 @@ class BoostListingScreen extends StatelessWidget {
                 billing: billing,
                 propertyId: propertyId,
               ),
+
+              // ── Boost credits ────────────────────────────────────────────
+              const SizedBox(height: 24),
+              _BoostCreditsSection(billing: billing, propertyId: propertyId),
+
+              // ── Pending-approval notice ─────────────────────────────────
+              if (billing.pendingApprovalMessage != null) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Text(
+                    billing.pendingApprovalMessage!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.blue.shade900,
+                        ),
+                  ),
+                ),
+              ],
 
               // ── Error display ──────────────────────────────────────────────
               if (billing.lastError != null) ...[
@@ -348,6 +416,199 @@ class _BoostOptionState extends State<_BoostOption> {
             ),
           ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boost credits — balance + redeem, and buy-a-pack
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _BoostCreditsSection extends StatefulWidget {
+  const _BoostCreditsSection({required this.billing, required this.propertyId});
+
+  final InAppBillingService billing;
+  final String propertyId;
+
+  @override
+  State<_BoostCreditsSection> createState() => _BoostCreditsSectionState();
+}
+
+class _BoostCreditsSectionState extends State<_BoostCreditsSection> {
+  bool _redeeming = false;
+  bool _buyingPackId = false;
+
+  Future<void> _redeem() async {
+    setState(() => _redeeming = true);
+    try {
+      await widget.billing.redeemBoostCredit(
+        propertyId: widget.propertyId,
+        days: 7,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Boost credit applied — 7 days added.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not redeem credit: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _redeeming = false);
+    }
+  }
+
+  Future<void> _buyPack(ProductDetails product) async {
+    setState(() => _buyingPackId = true);
+    try {
+      await widget.billing.purchaseBoostPackage(product);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'Complete the payment in Google Play. Credits are added once confirmed.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Purchase error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _buyingPackId = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final billing = widget.billing;
+    final pack3 = billing.productById(InAppBillingService.boostPack3Id);
+    final pack5 = billing.productById(InAppBillingService.boostPack5Id);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (billing.boostCredits > 0)
+          Container(
+            padding: const EdgeInsets.all(14),
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'You have ${billing.boostCredits} boost '
+                    '${billing.boostCredits == 1 ? 'credit' : 'credits'}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                FilledButton(
+                  onPressed: _redeeming ? null : _redeem,
+                  child: _redeeming
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Text('Use 1 credit'),
+                ),
+              ],
+            ),
+          ),
+        Text(
+          'Or buy a credit pack',
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Credits apply a 7-day boost to any listing you own, whenever you want.',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 12),
+        if (pack3 != null)
+          _PackOption(
+            label: '3 Boost Credits',
+            product: pack3,
+            enabled: billing.storeAvailable && !_buyingPackId,
+            loading: _buyingPackId,
+            onTap: () => _buyPack(pack3),
+          ),
+        if (pack3 != null && pack5 != null) const SizedBox(height: 12),
+        if (pack5 != null)
+          _PackOption(
+            label: '5 Boost Credits',
+            product: pack5,
+            enabled: billing.storeAvailable && !_buyingPackId,
+            loading: _buyingPackId,
+            onTap: () => _buyPack(pack5),
+          ),
+      ],
+    );
+  }
+}
+
+class _PackOption extends StatelessWidget {
+  const _PackOption({
+    required this.label,
+    required this.product,
+    required this.enabled,
+    required this.loading,
+    required this.onTap,
+  });
+
+  final String label;
+  final ProductDetails product;
+  final bool enabled;
+  final bool loading;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        title: Text(label,
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700)),
+        subtitle: const Text('Redeem credits anytime for a 7-day boost',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+        trailing: loading
+            ? const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : FilledButton(
+                onPressed: enabled ? onTap : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape:
+                      RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text(product.price,
+                    style:
+                        const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+              ),
+      ),
     );
   }
 }

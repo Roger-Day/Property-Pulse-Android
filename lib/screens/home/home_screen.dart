@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
@@ -10,11 +12,18 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
+import '../../models/ai_capability.dart';
 import '../../models/project_model.dart';
 import '../../models/property_model.dart';
+import '../../models/user_profile_doc.dart';
+import '../../providers/ai_feature_flags_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/user_role_provider.dart';
 import '../../repositories/project_repository.dart';
 import '../../repositories/property_repository.dart';
+import '../../repositories/user_profile_repository.dart';
+import '../../router/navigate_admin_dashboard.dart';
+import '../../services/messaging_service.dart';
 import '../../utils/responsive.dart';
 import '../../theme/pp_animations.dart';
 import '../../widgets/new_developments_strip.dart';
@@ -361,7 +370,7 @@ class _HomeScreenState extends State<HomeScreen>
                       title: 'Nearby Properties',
                       subtitle: _nearbySubtitle(),
                       actionLabel: 'Map',
-                      onTap: () => context.go('/map'),
+                      onTap: () => context.push('/map-view'),
                     ),
                   ),
                 ),
@@ -471,6 +480,17 @@ class _HeroHeaderState extends State<_HeroHeader>
   late Animation<double> _scaleAnim;
   int? _totalProperties;
 
+  // The signed-in user's real name, from Firestore — matches iOS
+  // HeroHeaderView reading `authViewModel.currentUser?.fullName` (the
+  // Firestore-backed profile), not FirebaseAuth's own `displayName`. The
+  // Auth SDK's `displayName` is frequently never set (email/password
+  // sign-up, accounts created before a name was collected, etc.), which
+  // is why the greeting and avatar initial were both silently falling
+  // back to "there"/"T" even for accounts with a real name in their
+  // Firestore profile.
+  String? _profileFullName;
+  StreamSubscription<UserProfileDoc?>? _profileSub;
+
   @override
   void initState() {
     super.initState();
@@ -489,11 +509,24 @@ class _HeroHeaderState extends State<_HeroHeader>
       if (mounted) _animCtrl.forward();
     });
     _fetchCount();
+    _watchProfileName();
+  }
+
+  void _watchProfileName() {
+    final uid = widget.auth.user?.uid;
+    if (uid == null) return;
+    _profileSub = context
+        .read<UserProfileRepository>()
+        .watchUserProfile(uid)
+        .listen((doc) {
+      if (mounted) setState(() => _profileFullName = doc?.fullName);
+    });
   }
 
   @override
   void dispose() {
     _animCtrl.dispose();
+    _profileSub?.cancel();
     super.dispose();
   }
 
@@ -515,8 +548,12 @@ class _HeroHeaderState extends State<_HeroHeader>
   int get _propertiesValue => _totalProperties ?? widget.properties.length;
 
   String get _firstName {
-    final name = widget.auth.user?.displayName?.trim() ?? '';
-    if (name.isNotEmpty) return name.split(' ').first;
+    final profileName = _profileFullName?.trim() ?? '';
+    if (profileName.isNotEmpty) return profileName.split(' ').first;
+    // Legacy/loading-state fallback — Auth's own displayName, if the
+    // Firestore profile stream hasn't emitted yet.
+    final authName = widget.auth.user?.displayName?.trim() ?? '';
+    if (authName.isNotEmpty) return authName.split(' ').first;
     return 'there';
   }
 
@@ -804,12 +841,9 @@ class _NotificationBell extends StatelessWidget {
       child: StreamBuilder<List<Map<String, dynamic>>>(
         stream: repo.watchConversations(uid),
         builder: (context, snap) {
-          var unread = 0;
-          for (final t in snap.data ?? const []) {
-            unread +=
-                (t['unreadCounts'] as Map<String, dynamic>?)?[uid] as int? ??
-                    0;
-          }
+          final unread = (snap.data ?? const [])
+              .where((t) => MessagingService.isConversationUnread(t, uid))
+              .length;
           return Stack(
             clipBehavior: Clip.none,
             children: [
@@ -1045,6 +1079,35 @@ class _QuickActionsGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final isLoggedIn = context.select<AuthProvider, bool>(
         (a) => a.isSignedIn && !a.isAnonymous);
+    final isAdmin = context.select<UserRoleProvider, bool>((p) => p.isAdmin);
+    final pulseFinderEnabled = context.select<AiFeatureFlagsProvider, bool>(
+        (p) => p.isEnabled(AiCapability.propertyChat));
+    final uid =
+        context.select<AuthProvider, String?>((a) => isLoggedIn ? a.user?.uid : null);
+
+    return StreamBuilder<UserProfileDoc?>(
+      stream: uid == null
+          ? const Stream.empty()
+          : context.read<UserProfileRepository>().watchUserProfile(uid),
+      builder: (context, profileSnap) {
+        // "Add property" mirrors iOS QuickActionsSection: only realtor/
+        // owner/admin see it — seekers, developers (who have their own
+        // "Projects" flow), and Airbnb hosts (their own listing wizard) don't.
+        final role = profileSnap.data?.normalizedRole;
+        final canAddProperty =
+            isAdmin || role == 'realtor' || role == 'owner';
+        return _buildGrid(context, isLoggedIn, isAdmin, pulseFinderEnabled, canAddProperty);
+      },
+    );
+  }
+
+  Widget _buildGrid(
+    BuildContext context,
+    bool isLoggedIn,
+    bool isAdmin,
+    bool pulseFinderEnabled,
+    bool canAddProperty,
+  ) {
     final actions = [
       _QuickActionData(
         icon: Icons.search_outlined,
@@ -1053,6 +1116,14 @@ class _QuickActionsGrid extends StatelessWidget {
         color: Colors.green,
           onTap: () => context.go('/search'),
       ),
+      if (pulseFinderEnabled)
+        _QuickActionData(
+          icon: Icons.auto_awesome,
+          title: 'Pulse Finder',
+          subtitle: 'Chat to find a home',
+          color: AppColors.primary,
+          onTap: () => context.push('/pulse-finder'),
+        ),
       if (isLoggedIn)
         _QuickActionData(
           icon: Icons.favorite,
@@ -1061,7 +1132,7 @@ class _QuickActionsGrid extends StatelessWidget {
           color: AppColors.error,
           onTap: () => context.push('/saved'),
         ),
-      if (isLoggedIn)
+      if (isLoggedIn && canAddProperty)
         _QuickActionData(
           icon: Icons.add_home_work_outlined,
           title: 'Add property',
@@ -1087,6 +1158,16 @@ class _QuickActionsGrid extends StatelessWidget {
           await launchUrl(uri);
         },
       ),
+      // Admin Dashboard — mirrors iOS QuickActionsSection's trailing
+      // "Admin"/"Dashboard" card, shown only for admin role.
+      if (isAdmin)
+        _QuickActionData(
+          icon: Icons.admin_panel_settings_outlined,
+          title: 'Admin',
+          subtitle: 'Dashboard',
+          color: AppColors.error,
+          onTap: () async => navigateToAdminDashboard(context),
+        ),
     ];
 
     return LayoutBuilder(
@@ -1310,7 +1391,7 @@ class _NearbySection extends StatelessWidget {
                     child: Text(denied ? 'Enable location' : 'Refresh nearby'),
                   ),
                   OutlinedButton(
-                    onPressed: () => context.go('/map'),
+                    onPressed: () => context.push('/map-view'),
                     child: const Text('Open map'),
                   ),
                 ],

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_constants.dart';
 import '../../providers/auth_provider.dart';
@@ -28,12 +29,50 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _busy = false;
   String? _error;
 
+  late final AuthProvider _auth;
+
+  @override
+  void initState() {
+    super.initState();
+    _auth = context.read<AuthProvider>();
+    _auth.addListener(_onAuthChanged);
+  }
+
   @override
   void dispose() {
+    _auth.removeListener(_onAuthChanged);
     _email.dispose();
     _password.dispose();
     _passwordFocus.dispose();
     super.dispose();
+  }
+
+  /// Mirrors iOS's post-sign-in `isDeleted`/`isBanned`/`isSuspended` gate —
+  /// "Account Deleted" gets its own dedicated alert (matching iOS's exact
+  /// title/message); banned/suspended reuse the same generic inline error
+  /// text iOS shows for both (`AuthError.userDisabled`).
+  void _onAuthChanged() {
+    final reason = _auth.blockedReason;
+    if (reason == null || !mounted) return;
+    if (reason == AccountBlockedReason.deleted) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Account Deleted'),
+          content: const Text(
+              'This account has been permanently deleted. If this is a mistake, please contact support.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      ).then((_) => _auth.clearBlockedReason());
+    } else {
+      setState(() => _error = 'This account has been disabled.');
+      _auth.clearBlockedReason();
+    }
   }
 
   Future<void> _run(Future<void> Function() fn) async {
@@ -270,12 +309,72 @@ class _SignInScreenState extends State<SignInScreen> {
                           },
                     child: const Text('Continue as guest'),
                   ),
+                  const SizedBox(height: PPSpacing.lg),
+
+                  // ── Legal consent footer ────────────────────────────────
+                  // App Store Guideline 5.1.1 / Play data-safety equivalent:
+                  // users must be informed about data collection before they
+                  // authenticate. Mirrors iOS `LegalConsentFooter`.
+                  const _LegalConsentFooter(),
                 ],
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _LegalConsentFooter extends StatelessWidget {
+  const _LegalConsentFooter();
+
+  Future<void> _open(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          'By continuing you agree to our',
+          style: PPTypography.footnote.copyWith(color: PPColors.gray1),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 2),
+        Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            InkWell(
+              onTap: () => _open(AppConstants.termsOfServiceUrl),
+              child: Text(
+                'Terms of Service',
+                style: PPTypography.footnote.copyWith(
+                  fontWeight: FontWeight.w600,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+            Text(' and ',
+                style: PPTypography.footnote.copyWith(color: PPColors.gray1)),
+            InkWell(
+              onTap: () => _open(AppConstants.privacyPolicyUrl),
+              child: Text(
+                'Privacy Policy',
+                style: PPTypography.footnote.copyWith(
+                  fontWeight: FontWeight.w600,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

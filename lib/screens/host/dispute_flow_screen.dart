@@ -1,7 +1,10 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../services/dispute_service.dart';
+import 'dispute_detail_screen.dart';
 
 enum _DisputeStep { selectReason, describe, review, processing, success, failure }
 
@@ -35,18 +38,27 @@ enum _DisputeReason {
 }
 
 /// Mirrors iOS `DisputeFlowView` — multi-step dispute filing for bookings.
+///
+/// Submission goes through the `openDispute` Cloud Function (same contract
+/// iOS uses), which authenticates the caller server-side and verifies they
+/// are actually the guest/host/admin on the booking before creating the
+/// dispute — the client never writes to `disputes` directly.
 class DisputeFlowScreen extends StatefulWidget {
   const DisputeFlowScreen({
     super.key,
     required this.bookingId,
     required this.propertyTitle,
-    required this.reporterUserId,
+    this.openedByRole = 'host',
     this.onDismiss,
   });
 
   final String bookingId;
   final String propertyTitle;
-  final String reporterUserId;
+
+  /// Must match the signed-in user's actual relationship to the booking —
+  /// the Cloud Function rejects the call otherwise. Currently only reachable
+  /// from the host's reservations screen, so this defaults to 'host'.
+  final String openedByRole;
   final VoidCallback? onDismiss;
 
   @override
@@ -73,26 +85,28 @@ class _DisputeFlowScreenState extends State<DisputeFlowScreen> {
   Future<void> _submit() async {
     setState(() => _step = _DisputeStep.processing);
     try {
-      final ref = await FirebaseFirestore.instance
-          .collection('disputes')
-          .add({
-        'bookingId': widget.bookingId,
-        'propertyTitle': widget.propertyTitle,
-        'reporterUserId': widget.reporterUserId,
-        'reason': _selectedReason?.name,
-        'description': _descriptionCtrl.text.trim(),
-        'status': 'open',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      final disputeId = await context.read<DisputeService>().openDispute(
+            bookingId: widget.bookingId,
+            reason: _selectedReason?.name ?? 'other',
+            description: _descriptionCtrl.text.trim(),
+            openedByRole: widget.openedByRole,
+          );
       if (!mounted) return;
       setState(() {
-        _disputeId = ref.id;
+        _disputeId = disputeId;
         _step = _DisputeStep.success;
       });
-    } catch (e) {
+    } on FirebaseFunctionsException catch (e) {
+      // message is server-authored (HttpsError) — safe to show as-is.
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = e.message ?? 'Unable to submit dispute. Please try again.';
+        _step = _DisputeStep.failure;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Unable to submit dispute. Please try again.';
         _step = _DisputeStep.failure;
       });
     }
@@ -462,7 +476,7 @@ class _SuccessStep extends StatelessWidget {
                     fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Text(
-              'Reference: ${disputeId.substring(0, 8).toUpperCase()}',
+              'Reference: ${disputeId.length >= 8 ? disputeId.substring(0, 8).toUpperCase() : disputeId.toUpperCase()}',
               style: const TextStyle(
                   color: AppColors.textSecondary,
                   fontFamily: 'monospace'),
@@ -474,6 +488,20 @@ class _SuccessStep extends StatelessWidget {
               style: TextStyle(color: AppColors.textSecondary),
             ),
             const SizedBox(height: 32),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => DisputeDetailScreen(disputeId: disputeId),
+                  ));
+                },
+                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(50)),
+                child: const Text('View Dispute'),
+              ),
+            ),
+            const SizedBox(height: 12),
             FilledButton(
               onPressed: () {
                 Navigator.of(context).pop();

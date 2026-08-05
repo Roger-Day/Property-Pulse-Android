@@ -16,6 +16,7 @@ class FeatureFlagsProvider extends ChangeNotifier {
           _onSnapshot,
           onError: (_) {
             _subscriptionsEnabled = false;
+            _boostedListingsEnabled = false;
             notifyListeners();
           },
         );
@@ -30,9 +31,18 @@ class FeatureFlagsProvider extends ChangeNotifier {
   bool _subscriptionsEnabled = true;
   bool get subscriptionsEnabled => _subscriptionsEnabled;
 
+  /// Defaults to false — mirrors iOS `FeatureFlags.lockedDefaults`
+  /// ("boostedListingsEnabled is OFF for launch"). Without reading this,
+  /// Android would sell listing boosts even while ops has this remote
+  /// kill-switch off for iOS.
+  bool _boostedListingsEnabled = false;
+  bool get boostedListingsEnabled => _boostedListingsEnabled;
+
   void _onSnapshot(DocumentSnapshot<Map<String, dynamic>> snap) {
     final data = snap.data();
     _subscriptionsEnabled = (data?['subscriptionsEnabled'] as bool?) ?? true;
+    _boostedListingsEnabled =
+        (data?['boostedListingsEnabled'] as bool?) ?? false;
     notifyListeners();
   }
 

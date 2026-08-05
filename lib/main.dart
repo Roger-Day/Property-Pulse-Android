@@ -11,6 +11,8 @@ import 'package:provider/provider.dart';
 
 import 'app.dart';
 import 'firebase_options.dart';
+import 'providers/ai_feature_flags_provider.dart';
+import 'providers/moderation_feature_flags_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/feature_flags_provider.dart';
 import 'providers/theme_mode_provider.dart';
@@ -23,8 +25,14 @@ import 'repositories/admin_repository.dart';
 import 'repositories/profile_actions_repository.dart';
 import 'repositories/project_repository.dart';
 import 'repositories/property_repository.dart';
+import 'repositories/pulse_finder_session_repository.dart';
 import 'repositories/user_profile_repository.dart';
 import 'router/app_router.dart';
+import 'features/pulse_finder/services/pulse_finder_ai_service.dart';
+import 'services/ai/ai_gateway.dart';
+import 'services/ai/ai_listing_service.dart';
+import 'services/ai/ai_search_service.dart';
+import 'services/ai/ai_service.dart';
 import 'services/analytics_service.dart';
 import 'services/crashlytics_service.dart';
 import 'services/developer_monetization_service.dart';
@@ -32,10 +40,12 @@ import 'services/in_app_billing_service.dart';
 import 'services/lead_credit_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/performance_service.dart';
+import 'services/search/pending_search_handoff.dart';
 import 'services/appointment_reminder_service.dart';
 import 'services/push_notification_service.dart';
 import 'services/stripe_service.dart';
 import 'services/cancellation_service.dart';
+import 'services/dispute_service.dart';
 import 'services/property_document_service.dart';
 
 Future<void> main() async {
@@ -128,8 +138,24 @@ Future<void> main() async {
         ChangeNotifierProvider<FeatureFlagsProvider>(
           create: (_) => FeatureFlagsProvider(),
         ),
+        // Independent per-capability AI rollout flags — see
+        // AiFeatureFlagsProvider's header comment for why this is a
+        // separate provider/document from FeatureFlagsProvider above.
+        ChangeNotifierProvider<AiFeatureFlagsProvider>(
+          create: (_) => AiFeatureFlagsProvider(),
+        ),
+        // Content-moderation rollout flags — see
+        // ModerationFeatureFlagsProvider's header comment for why this is a
+        // third, separate flags document from both of the above.
+        ChangeNotifierProvider<ModerationFeatureFlagsProvider>(
+          create: (_) => ModerationFeatureFlagsProvider(),
+        ),
         Provider<PropertyRepository>(
           create: (_) => PropertyRepository(FirebaseFirestore.instance),
+        ),
+        // Pulse Finder consultation history (Phase 4).
+        Provider<PulseFinderSessionRepository>(
+          create: (_) => PulseFinderSessionRepository(FirebaseFirestore.instance),
         ),
         Provider<AdminRepository>(
           create: (ctx) => AdminRepository(
@@ -162,8 +188,46 @@ Future<void> main() async {
         Provider<CancellationService>(
           create: (_) => CancellationService(),
         ),
+        Provider<DisputeService>(
+          create: (_) => DisputeService(),
+        ),
         Provider<PropertyDocumentService>(
           create: (_) => PropertyDocumentService(),
+        ),
+        // AI platform. AiGateway wraps the callable transport (App Check +
+        // auth travel automatically once activated above). AiPlatformService
+        // is the admin-only pipeline health check. AiListingService (Phase 1)
+        // and AiSearchService (Phase 2) are its real capabilities, each
+        // gated per-user by AiFeatureFlagsProvider above and server-side by
+        // config/aiFeatureFlags — see ai-orchestrator.js.
+        Provider<AiGateway>(
+          create: (ctx) => AiGateway(
+            isOnline: () => ctx.read<ConnectivityService>().isOnline,
+          ),
+        ),
+        Provider<AiPlatformService>(
+          create: (ctx) => AiPlatformService(ctx.read<AiGateway>()),
+        ),
+        Provider<AiListingService>(
+          create: (ctx) => AiListingService(ctx.read<AiGateway>()),
+        ),
+        Provider<AiSearchService>(
+          create: (ctx) => AiSearchService(ctx.read<AiGateway>()),
+        ),
+        // Pulse Finder (Phase 3) — PROPERTY_CHAT's client wrapper. Only the
+        // stateless service is global; PulseFinderConversationController is
+        // deliberately route-scoped (see app_router.dart's '/pulse-finder'
+        // route) so its conversation history is discarded when the route
+        // pops, per "session-only memory" in the feature spec.
+        Provider<PulseFinderAiService>(
+          create: (ctx) => PulseFinderAiService(ctx.read<AiGateway>()),
+        ),
+        // Phase 3.1 — carries a curated-recommendations filter from Pulse
+        // Finder's "View All Matching Properties" into ExploreScreen. See
+        // PendingSearchHandoff's header for why this can't just be a
+        // go_router `extra`.
+        ChangeNotifierProvider<PendingSearchHandoff>(
+          create: (_) => PendingSearchHandoff(),
         ),
         ChangeNotifierProvider<InAppBillingService>(
           create: (ctx) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -5,13 +7,17 @@ import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../constants/app_colors.dart';
+import '../../constants/app_constants.dart';
+import '../../models/ai_capability.dart';
 import '../../models/property_model.dart';
 import '../../models/saved_search_model.dart';
+import '../../providers/ai_feature_flags_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/saved_provider.dart';
 import '../../repositories/property_repository.dart';
 import '../../repositories/user_profile_repository.dart';
 import '../../services/analytics_service.dart';
+import '../../services/search/pending_search_handoff.dart';
 import '../../services/voice_search_service.dart';
 import '../../theme/pp_animations.dart';
 import '../../utils/responsive.dart';
@@ -39,18 +45,40 @@ class _ExploreScreenState extends State<ExploreScreen>
   // Voice search — mirrors iOS SpeechRecognitionService
   final _voiceSearch = VoiceSearchService();
 
-  // Cached stream — re-created only when _filter changes, never on every build().
-  // This prevents the stream from resetting when AuthProvider / SavedProvider
-  // notifies and causes the parent to rebuild.
+  // Cached stream — re-created only when _filter or _resultsLimit changes,
+  // never on every build(). This prevents the stream from resetting when
+  // AuthProvider / SavedProvider notifies and causes the parent to rebuild.
   Stream<List<PropertyModel>>? _listingsStream;
   PropertyFilter? _streamFilter;
+  int _streamLimit = AppConstants.propertiesPageSize;
+
+  /// How many results the current query has been widened to show — "Load
+  /// more" bumps this by a page and re-subscribes. Mirrors iOS
+  /// `PaginatedPropertyViewModel.loadMoreProperties()`, adapted to this
+  /// repo's realtime-stream architecture (see
+  /// `PropertyRepository.watchFilteredListings`'s `limitOverride` doc).
+  int _resultsLimit = AppConstants.propertiesPageSize;
 
   Stream<List<PropertyModel>> _getStream(PropertyRepository repo) {
-    if (_listingsStream == null || _streamFilter != _filter) {
+    final filterChanged = _streamFilter != _filter;
+    if (filterChanged) {
+      // A new search/filter always starts back at page one — an inflated
+      // limit from a previous query shouldn't carry over.
+      _resultsLimit = AppConstants.propertiesPageSize;
+    }
+    if (_listingsStream == null ||
+        filterChanged ||
+        _streamLimit != _resultsLimit) {
       _streamFilter = _filter;
-      _listingsStream = repo.watchFilteredListings(_filter);
+      _streamLimit = _resultsLimit;
+      _listingsStream =
+          repo.watchFilteredListings(_filter, limitOverride: _resultsLimit);
     }
     return _listingsStream!;
+  }
+
+  void _loadMore() {
+    setState(() => _resultsLimit += AppConstants.propertiesPageSize);
   }
 
   // iOS-style quick-filter chips (mirrors SearchView filterOptions).
@@ -75,10 +103,31 @@ class _ExploreScreenState extends State<ExploreScreen>
     super.initState();
     _voiceSearch.addListener(_onVoiceResult);
     _voiceSearch.initialize();
+    // Phase 3.1 — Pulse Finder's "View All Matching Properties" hands off a
+    // filter here. ExploreScreen is kept alive across tab switches (see
+    // app_router.dart's StatefulShellRoute), so this listener (not just the
+    // initial consume below) is what makes a handoff to an already-built
+    // instance actually apply — see PendingSearchHandoff's header comment.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<PendingSearchHandoff>().addListener(_onPendingSearchHandoff);
+      _onPendingSearchHandoff();
+    });
+  }
+
+  void _onPendingSearchHandoff() {
+    final filter = context.read<PendingSearchHandoff>().consume();
+    if (filter == null || !mounted) return;
+    setState(() {
+      _filter = filter;
+      _searchController.text = filter.query;
+      _activeChipKey = null;
+    });
   }
 
   @override
   void dispose() {
+    context.read<PendingSearchHandoff>().removeListener(_onPendingSearchHandoff);
     _voiceSearch.removeListener(_onVoiceResult);
     _voiceSearch.dispose();
     _searchController.dispose();
@@ -95,7 +144,9 @@ class _ExploreScreenState extends State<ExploreScreen>
   }
 
   void _applyQuery(String q) {
-    setState(() => _filter = _filter.copyWith(query: q));
+    setState(() {
+      _filter = _filter.copyWith(query: q);
+    });
     if (q.isNotEmpty) {
       AnalyticsService.logSearch(q, hasFilters: !_filter.isEmpty);
     }
@@ -303,9 +354,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                         onChanged: _applyQuery,
                         textInputAction: TextInputAction.search,
                         decoration: InputDecoration(
-                          hintText: listening
-                              ? 'Listening…'
-                              : 'Search city, state or title...',
+                          hintText: listening ? 'Listening…' : 'Search city, state or title...',
                           prefixIcon: const Icon(Icons.search, size: 20),
                           suffixIcon: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -442,11 +491,48 @@ class _ExploreScreenState extends State<ExploreScreen>
             ),
           ),
 
+          // ── Pulse Finder entry card — additive, doesn't replace the search
+          // bar. Only shown on the blank "browse" state (no query, no
+          // filters) so it doesn't compete with results ──────────────────
+          if (_filter.isEmpty &&
+              _searchController.text.isEmpty &&
+              context.watch<AiFeatureFlagsProvider>().isEnabled(AiCapability.propertyChat))
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: Responsive.hPad(context))
+                  .copyWith(top: 10),
+              child: Material(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => context.push('/pulse-finder'),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.auto_awesome, color: AppColors.primary, size: 20),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Not sure where to start? Chat with Pulse Finder.',
+                            style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.primary),
+                          ),
+                        ),
+                        Icon(Icons.chevron_right, color: AppColors.primary),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // ── Active advanced-filter chips ─────────────────────────────────
           if (activeFilters > 0)
             _ActiveFilterChips(
               filter: _filter,
-              onRemove: (updated) => setState(() => _filter = updated),
+              onRemove: (updated) => setState(() {
+                _filter = updated;
+              }),
             ),
 
           // ── Listings ─────────────────────────────────────────────────────
@@ -471,6 +557,13 @@ class _ExploreScreenState extends State<ExploreScreen>
                 // padding) so the two-column body has room to breathe.
                 // Cap only on large tablets/desktop for readable line lengths.
                 final cardMaxWidth = tablet ? 760.0 : double.infinity;
+                // A full page came back, so there may be more beyond the
+                // current window — offer "Load more". (Heuristic: with
+                // heavy client-side filters like a free-text query, the
+                // filtered count can undercount how many raw docs are truly
+                // left, but this only ever under-offers "Load more", never
+                // over-offers past the real end of the collection.)
+                final hasMore = list.length >= _resultsLimit;
                 return RefreshIndicator(
                   onRefresh: () async {
                     HapticFeedback.lightImpact();
@@ -480,6 +573,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                     setState(() {
                       _listingsStream = null;
                       _streamFilter = null;
+                      _resultsLimit = AppConstants.propertiesPageSize;
                     });
                     await Future<void>.delayed(
                         const Duration(milliseconds: 600));
@@ -488,9 +582,20 @@ class _ExploreScreenState extends State<ExploreScreen>
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                     // Pre-render ~2 cards beyond the viewport for smooth scroll.
                     cacheExtent: 600,
-                    itemCount: list.length,
+                    itemCount: list.length + (hasMore ? 1 : 0),
                     separatorBuilder: (_, __) => const SizedBox(height: 16),
                     itemBuilder: (context, i) {
+                      if (i >= list.length) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: OutlinedButton(
+                              onPressed: _loadMore,
+                              child: const Text('Load more'),
+                            ),
+                          ),
+                        );
+                      }
                       // iOS: LazyVStack items stagger in — PPStaggeredItem applies
                       // index-based fade+scale delay (max 8 items to avoid long waits)
                       return Align(
@@ -618,9 +723,17 @@ class _ActiveFilterChips extends StatelessWidget {
               ),
             if (filter.maxPrice != null)
               _chip(
-                label: 'Max \$${filter.maxPrice!.toStringAsFixed(0)}',
-                onRemove: () =>
-                    onRemove(filter.copyWith(clearMaxPrice: true)),
+                // AI search may attach an explicit currency to the price
+                // bound; show it so "Max JMD 30000000" and "Max $500000"
+                // read as what they actually filter.
+                label:
+                    'Max ${filter.currencyCode ?? '\$'}${filter.currencyCode != null ? ' ' : ''}${filter.maxPrice!.toStringAsFixed(0)}',
+                // Removing the last price bound also removes its currency
+                // modifier — otherwise a hidden currency-only restriction
+                // would linger with no chip left to clear it.
+                onRemove: () => onRemove(filter.copyWith(
+                    clearMaxPrice: true,
+                    clearCurrencyCode: filter.minPrice == null)),
               ),
             if (filter.propertyType != null)
               _chip(

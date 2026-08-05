@@ -630,6 +630,13 @@ class _ReviewCardState extends State<_ReviewCard> {
                   ],
                 ),
               ),
+              IconButton(
+                tooltip: 'Report review',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.flag_outlined,
+                    size: 18, color: AppColors.textTertiary),
+                onPressed: () => _showReportSheet(context),
+              ),
             ],
           ),
           if (review.title.isNotEmpty) ...[
@@ -745,6 +752,102 @@ class _ReviewCardState extends State<_ReviewCard> {
     if (parts.isEmpty || parts.first.isEmpty) return '?';
     if (parts.length == 1) return parts.first[0].toUpperCase();
     return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+  }
+
+  Future<void> _showReportSheet(BuildContext context) async {
+    final auth = context.read<AuthProvider>();
+    if (!auth.isSignedIn || auth.isAnonymous) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sign in to report a review')),
+      );
+      return;
+    }
+    final userId = auth.user!.uid;
+    final result = await showModalBottomSheet<_ReviewReportReason>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => const _ReportReviewSheet(),
+    );
+    if (result == null || !context.mounted) return;
+    try {
+      await context.read<UserProfileRepository>().submitModerationReport(
+            reporterId: userId,
+            targetType: 'review',
+            targetId: review.id,
+            reason: result.value,
+          );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Review reported. Thank you for letting us know.')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not submit report: $e')));
+    }
+  }
+}
+
+enum _ReviewReportReason {
+  spam,
+  offensive,
+  fake,
+  irrelevant,
+  other;
+
+  String get label {
+    switch (this) {
+      case _ReviewReportReason.spam:
+        return 'Spam or advertising';
+      case _ReviewReportReason.offensive:
+        return 'Offensive or abusive language';
+      case _ReviewReportReason.fake:
+        return 'Fake or misleading review';
+      case _ReviewReportReason.irrelevant:
+        return 'Not relevant to this property';
+      case _ReviewReportReason.other:
+        return 'Other';
+    }
+  }
+
+  String get value => name;
+}
+
+class _ReportReviewSheet extends StatelessWidget {
+  const _ReportReviewSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, 4),
+              child: Text('Report this review',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Text(
+                'Let us know why this review should be reviewed by our team.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+              ),
+            ),
+            for (final reason in _ReviewReportReason.values)
+              ListTile(
+                title: Text(reason.label),
+                onTap: () => Navigator.of(context).pop(reason),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -132,7 +132,11 @@ class _HostCalendarScreenState extends State<HostCalendarScreen> {
       appBar: AppBar(
         title: const Text('Host Calendar'),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh calendar',
+            onPressed: _load,
+          ),
         ],
       ),
       body: _loading
@@ -263,6 +267,7 @@ class _MonthCalendar extends StatelessWidget {
             children: [
               IconButton(
                 icon: const Icon(Icons.chevron_left),
+                tooltip: 'Previous month',
                 onPressed: () => onMonthChanged(DateTime(
                     focusedMonth.year, focusedMonth.month - 1, 1)),
               ),
@@ -274,6 +279,7 @@ class _MonthCalendar extends StatelessWidget {
               ),
               IconButton(
                 icon: const Icon(Icons.chevron_right),
+                tooltip: 'Next month',
                 onPressed: () => onMonthChanged(DateTime(
                     focusedMonth.year, focusedMonth.month + 1, 1)),
               ),

@@ -16,27 +16,59 @@ class UserProfileDoc {
     this.realtorAgency,
     this.realtorYearsExperience,
     this.notificationsEnabled = true,
+    this.stripeAccountId,
+    this.createdAt,
+    this.verificationStatus,
+    this.verificationLevel,
+    this.verifiedRealtorSince,
+    this.isFeaturedEligible = false,
   });
 
   final String? fullName;
   final String? role;
+
   /// iOS `User.previousRole` — the role before last switch (blocked from re-selecting).
   final String? previousRole;
+
   /// iOS `User.lastRoleSwitchDate` — used to enforce 7-day cooldown.
   final DateTime? lastRoleSwitchDate;
+
   /// iOS `User.roleSwitchCount`.
   final int roleSwitchCount;
+
   /// iOS `User.region` — server id e.g. `us`, `uk` (`Region.id`).
   final String? region;
   final String? bio;
   final String? phoneNumber;
   final String? profileImageUrl;
+
   /// From `realtorInfo` map (iOS `User.RealtorInfo`).
   final String? realtorLicenseNumber;
   final String? realtorAgency;
   final int? realtorYearsExperience;
+
   /// From `preferences.notificationsEnabled` (defaults true).
   final bool notificationsEnabled;
+
+  /// Stripe Connect account id — null/empty means payouts aren't set up yet
+  /// (drives the Host Dashboard's "Payouts not set up" banner).
+  final String? stripeAccountId;
+
+  /// Account creation date — used for "Years on Property Pulse" (Verified
+  /// Realtor Rewards, Part 6). Server-guarded to only ever be set once (see
+  /// ensureUserProfileExists's fix); safe to treat as stable.
+  final DateTime? createdAt;
+
+  /// 'pending' | 'verified' | 'rejected' | 'suspended' | 'revoked' | 'expired'.
+  final String? verificationStatus;
+  final String? verificationLevel;
+
+  /// Set server-side by functions/verification-rewards-functions.js the
+  /// instant a Realtor becomes Verified — null until then, cleared on revoke.
+  final DateTime? verifiedRealtorSince;
+
+  /// Part 5 — eligibility flag only; no paid promotion exists yet.
+  final bool isFeaturedEligible;
 
   factory UserProfileDoc.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> snap,
@@ -78,14 +110,27 @@ class UserProfileDoc {
       region: d['region'] as String?,
       bio: d['bio'] as String?,
       phoneNumber: d['phoneNumber'] as String? ?? d['phone_number'] as String?,
-      profileImageUrl: d['profileImageURL'] as String? ??
-          d['profile_image_url'] as String?,
+      profileImageUrl:
+          d['profileImageURL'] as String? ?? d['profile_image_url'] as String?,
       realtorLicenseNumber: ri?['licenseNumber'] as String?,
       realtorAgency: ri?['agency'] as String?,
       realtorYearsExperience: years,
       notificationsEnabled: notificationsEnabled,
+      stripeAccountId: d['stripeAccountId'] as String?,
+      createdAt: parseTs(d['createdAt']),
+      verificationStatus:
+          d['verificationStatus'] as String? ?? d['verification_status'] as String?,
+      verificationLevel:
+          d['verificationLevel'] as String? ?? d['verification_level'] as String?,
+      verifiedRealtorSince: parseTs(d['verifiedRealtorSince']),
+      isFeaturedEligible: d['isFeaturedEligible'] as bool? ?? false,
     );
   }
+
+  /// Verified Realtor Rewards, Part 1 — true once verificationStatus ==
+  /// 'verified'. Distinct from [isFeaturedEligible], which the server only
+  /// sets true for verified *realtors* specifically.
+  bool get isVerified => (verificationStatus ?? '').toLowerCase() == 'verified';
 
   /// Matches iOS `UserRole.admin` (Firestore `users.role` / `user_public.role`).
   bool get isAdmin => isAdminRole(role);
@@ -99,15 +144,15 @@ class UserProfileDoc {
   /// Matches iOS `UserRole.propertySeeker` for hiding Analytics toggle.
   static bool isPropertySeekerRole(String? role) {
     final r = role?.toLowerCase().trim() ?? '';
-    return r == 'property seeker' ||
-        r.replaceAll(' ', '') == 'propertyseeker';
+    return r == 'property seeker' || r.replaceAll(' ', '') == 'propertyseeker';
   }
 
   /// Mirrors iOS `hasListingCapability` — every role that can create/own
   /// listings: realtor, owner, airbnbHost, developer, admin.
   bool get isLister {
-    final r =
-        (role?.toLowerCase().trim() ?? '').replaceAll(' ', '').replaceAll('_', '');
+    final r = (role?.toLowerCase().trim() ?? '')
+        .replaceAll(' ', '')
+        .replaceAll('_', '');
     return r == 'admin' ||
         r == 'realtor' ||
         r == 'owner' ||
@@ -149,7 +194,10 @@ class UserProfileDoc {
   /// iOS `UserRole.propertySeeker`
   bool get isSeeker {
     final r = role?.toLowerCase().trim() ?? '';
-    return r.isEmpty || r == 'seeker' || r == 'property seeker' || r == 'propertyseeker';
+    return r.isEmpty ||
+        r == 'seeker' ||
+        r == 'property seeker' ||
+        r == 'propertyseeker';
   }
 
   /// Normalised role key matching iOS UserRole.rawValue

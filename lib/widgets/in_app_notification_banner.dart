@@ -120,12 +120,31 @@ class _BannerCard extends StatelessWidget {
         return Icons.message;
       case 'booking':
       case 'booking_confirmed':
+      case 'booking_declined':
+      case 'booking_cancelled':
+      case 'booking_cancelled_by_guest':
+      case 'booking_cancellation':
+      case 'booking_expired':
+      case 'booking_paid':
+      case 'booking_payment_reminder_24h':
+      case 'booking_request':
+      case 'host_booking_paid':
+      case 'booking_new_request':
         return Icons.hotel;
+      case 'dispute_opened':
+      case 'dispute_resolved':
+        return Icons.gavel;
+      case 'payout_released':
+        return Icons.payments;
       case 'appointment':
         return Icons.calendar_month;
       case 'property':
       case 'price_drop':
         return Icons.home;
+      case 'property_deletion_warning':
+      case 'property_deleted':
+      case 'immediate_deletion_confirmation':
+        return Icons.delete_outline;
       case 'verification':
         return Icons.verified;
       case 'review':
@@ -144,7 +163,11 @@ class _BannerCard extends StatelessWidget {
         notification?.title ?? message.data['title'] as String? ?? 'Property Pulse';
     final body =
         notification?.body ?? message.data['body'] as String? ?? '';
-    final type = message.data['type'] as String?;
+    // Same 3-way fallback as PushNotificationService._routeFor — the
+    // backend inconsistently keys this as `type` or `notificationType`.
+    final type = message.data['type'] as String? ??
+        message.data['notificationType'] as String? ??
+        message.data['notification_type'] as String?;
 
     return Material(
       elevation: 8,
@@ -200,6 +223,7 @@ class _BannerCard extends StatelessWidget {
               // Dismiss
               IconButton(
                 icon: const Icon(Icons.close, size: 16),
+                tooltip: 'Dismiss',
                 onPressed: onDismiss,
                 padding: const EdgeInsets.all(4),
                 constraints: const BoxConstraints(

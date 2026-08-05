@@ -230,6 +230,9 @@ class _LeadManagementContentState extends State<_LeadManagementContent> {
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
+            tooltip: _selectedTab == _LeadTab.templates
+                ? 'New template'
+                : 'New lead',
             onPressed: () {
               if (_selectedTab == _LeadTab.templates) {
                 _showNewTemplateSheet(context, svc);
@@ -347,21 +350,26 @@ class _LeadPipelineView extends StatelessWidget {
       return _EmptyLeadsPlaceholder(
           message: 'No leads yet.\nTap + to add your first lead.');
     }
-    return ListView(
-      children: _order.expand((status) {
-        final group = leads.where((l) => l.status == status).toList();
-        if (group.isEmpty) return <Widget>[];
-        return [
-          _LeadStatusHeader(status: status, count: group.count),
-          ...group.map(
-            (lead) => _LeadRow(
-              lead: lead,
-              leadService: leadService,
-              onTap: () => onEdit(lead),
-            ),
+    // A realtor's pipeline can grow to hundreds of leads over time — flatten
+    // the grouped-by-status sections into one list up front, then hand it to
+    // a lazy builder instead of eagerly building every row.
+    final items = _order.expand((status) {
+      final group = leads.where((l) => l.status == status).toList();
+      if (group.isEmpty) return <Widget>[];
+      return [
+        _LeadStatusHeader(status: status, count: group.count),
+        ...group.map(
+          (lead) => _LeadRow(
+            lead: lead,
+            leadService: leadService,
+            onTap: () => onEdit(lead),
           ),
-        ];
-      }).toList(),
+        ),
+      ];
+    }).toList();
+    return ListView.builder(
+      itemCount: items.length,
+      itemBuilder: (context, i) => items[i],
     );
   }
 }
@@ -515,11 +523,13 @@ class _PriorityLeadsView extends StatelessWidget {
             "No high-priority leads.\nSet a lead's priority to High in the pipeline.",
       );
     }
-    return ListView(
-      children: leads
-          .map((lead) => _LeadRow(
-              lead: lead, leadService: leadService, onTap: () => onEdit(lead)))
-          .toList(),
+    return ListView.builder(
+      itemCount: leads.length,
+      itemBuilder: (context, i) => _LeadRow(
+        lead: leads[i],
+        leadService: leadService,
+        onTap: () => onEdit(leads[i]),
+      ),
     );
   }
 }

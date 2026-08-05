@@ -479,12 +479,14 @@ class _AdminApplicationFormScreenState extends State<AdminApplicationFormScreen>
                   onPressed: () => setState(() {
                     _yearsRe = (_yearsRe - 1).clamp(0, 50);
                   }),
+                  tooltip: 'Decrease years in real estate',
                   icon: const Icon(Icons.remove),
                 ),
                 IconButton(
                   onPressed: () => setState(() {
                     _yearsRe = (_yearsRe + 1).clamp(0, 50);
                   }),
+                  tooltip: 'Increase years in real estate',
                   icon: const Icon(Icons.add),
                 ),
               ],
@@ -498,12 +500,14 @@ class _AdminApplicationFormScreenState extends State<AdminApplicationFormScreen>
                   onPressed: () => setState(() {
                     _mgmtYears = (_mgmtYears - 1).clamp(0, 30);
                   }),
+                  tooltip: 'Decrease management experience years',
                   icon: const Icon(Icons.remove),
                 ),
                 IconButton(
                   onPressed: () => setState(() {
                     _mgmtYears = (_mgmtYears + 1).clamp(0, 30);
                   }),
+                  tooltip: 'Increase management experience years',
                   icon: const Icon(Icons.add),
                 ),
               ],
@@ -597,12 +601,14 @@ class _AdminApplicationFormScreenState extends State<AdminApplicationFormScreen>
                   onPressed: () => setState(() {
                     _hoursPerWeek = (_hoursPerWeek - 1).clamp(1, 40);
                   }),
+                  tooltip: 'Decrease hours per week',
                   icon: const Icon(Icons.remove),
                 ),
                 IconButton(
                   onPressed: () => setState(() {
                     _hoursPerWeek = (_hoursPerWeek + 1).clamp(1, 40);
                   }),
+                  tooltip: 'Increase hours per week',
                   icon: const Icon(Icons.add),
                 ),
               ],
@@ -803,12 +809,14 @@ class _AdminApplicationFormScreenState extends State<AdminApplicationFormScreen>
                   onPressed: () => setState(() {
                     r.yearsKnown = (r.yearsKnown - 1).clamp(0, 50);
                   }),
+                  tooltip: 'Decrease years known',
                   icon: const Icon(Icons.remove),
                 ),
                 IconButton(
                   onPressed: () => setState(() {
                     r.yearsKnown = (r.yearsKnown + 1).clamp(0, 50);
                   }),
+                  tooltip: 'Increase years known',
                   icon: const Icon(Icons.add),
                 ),
               ],

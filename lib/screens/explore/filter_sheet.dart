@@ -56,6 +56,7 @@ class _FilterSheetState extends State<FilterSheet> {
   late bool _hasBalcony;
   late bool _petFriendly;
   late bool _furnished;
+  late bool _verifiedRealtorsOnly;
   late int? _minSqft;
   late int? _maxSqft;
   late DateTime? _dateFrom;
@@ -110,6 +111,7 @@ class _FilterSheetState extends State<FilterSheet> {
     _hasBalcony = f.hasBalcony;
     _petFriendly = f.petFriendly;
     _furnished = f.furnished;
+    _verifiedRealtorsOnly = f.verifiedRealtorsOnly;
     _minSqft = f.minSquareFootage;
     _maxSqft = f.maxSquareFootage;
     _dateFrom = f.dateFrom;
@@ -159,6 +161,7 @@ class _FilterSheetState extends State<FilterSheet> {
         hasBalcony: _hasBalcony,
         petFriendly: _petFriendly,
         furnished: _furnished,
+        verifiedRealtorsOnly: _verifiedRealtorsOnly,
         dateFrom: _dateFrom,
         dateTo: _dateTo,
       );
@@ -512,6 +515,8 @@ class _FilterSheetState extends State<FilterSheet> {
             (v) => setState(() => _petFriendly = v)),
         _ToggleRow('Furnished', _furnished,
             (v) => setState(() => _furnished = v)),
+        _ToggleRow('Verified Realtors Only', _verifiedRealtorsOnly,
+            (v) => setState(() => _verifiedRealtorsOnly = v)),
       ],
     );
   }
@@ -907,6 +912,7 @@ class _StepRow extends StatelessWidget {
           const Spacer(),
           IconButton(
             icon: const Icon(Icons.remove_circle_outline),
+            tooltip: 'Decrease $label',
             onPressed: value > min ? () => onChanged(value - 1) : null,
             color: AppColors.primary,
             padding: EdgeInsets.zero,
@@ -922,6 +928,7 @@ class _StepRow extends StatelessWidget {
           ),
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
+            tooltip: 'Increase $label',
             onPressed: value < max ? () => onChanged(value + 1) : null,
             color: AppColors.primary,
             padding: EdgeInsets.zero,
@@ -973,6 +980,7 @@ int filterActiveCount(PropertyFilter f) {
   if (f.hasBalcony) n++;
   if (f.petFriendly) n++;
   if (f.furnished) n++;
+  if (f.verifiedRealtorsOnly) n++;
   if (f.dateFrom != null) n++;
   if (f.dateTo != null) n++;
   return n;

@@ -169,7 +169,11 @@ class ListingFormField extends StatelessWidget {
       style: const TextStyle(fontSize: 16),
       decoration: InputDecoration(
         hintText: hint ?? label,
-        hintStyle: TextStyle(color: AppColors.textTertiary, fontSize: 16),
+        // textSecondary, not textTertiary — this hint doubles as the
+        // field's only visible label (no floating label in this iOS-Form
+        // style), and textTertiary's ~2.5:1 contrast against a white
+        // field is well under WCAG's 4.5:1 minimum for normal text.
+        hintStyle: const TextStyle(color: AppColors.textSecondary, fontSize: 16),
         prefixText: prefixText,
         filled: false,
         // iOS Form style: no border box, just a bottom underline divider
@@ -349,13 +353,17 @@ class BedroomBathroomStepper extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.textSecondary,
-                ),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+            ),
           ),
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               _StepBtn(
                 icon: Icons.remove,

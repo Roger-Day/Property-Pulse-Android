@@ -646,7 +646,10 @@ class _ExistingStatusBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPending = status == 'pending';
-    final isApproved = status == 'approved';
+    // Admin approvals write status: 'verified' (see AdminRepository); iOS's
+    // own banner checks both spellings for exactly this reason — matching
+    // only 'approved' here made every actually-approved user see "Rejected".
+    final isApproved = status == 'approved' || status == 'verified';
     final color = isApproved
         ? Colors.green
         : isPending

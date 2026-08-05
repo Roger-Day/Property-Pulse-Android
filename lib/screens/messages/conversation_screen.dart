@@ -18,6 +18,7 @@ import '../../repositories/property_repository.dart';
 import '../../services/analytics_service.dart';
 import '../../services/messaging_service.dart';
 import '../../widgets/full_screen_image_gallery.dart';
+import '../../widgets/pp_widgets.dart';
 import '../../widgets/messaging/message_templates_sheet.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,8 +246,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   Future<void> _markThreadRead() async {
     try {
       await _convRef.update({
-        'unreadCounts.${widget.currentUserId}': 0,
-        // iOS-parity: lastReadAtByUser map used for read receipts
+        // iOS-parity: lastReadAtByUser map is the sole source of truth for
+        // unread state — see MessagingService.isConversationUnread.
         'lastReadAtByUser.${widget.currentUserId}':
             FieldValue.serverTimestamp(),
       });
@@ -624,14 +625,26 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    otherName,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          otherName,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      // Verified Realtor Rewards, Part 1 — chat profile header.
+                      // otherId's verificationStatus isn't in the conversation
+                      // doc's denormalized participant snapshot, so this reads
+                      // the live public profile (small, scoped stream).
+                      if (otherId.isNotEmpty) _PeerVerifiedBadge(userId: otherId),
+                    ],
                   ),
                   if (showListingInAppBar)
                     Text(
@@ -1699,6 +1712,34 @@ class _PeerAvatar extends StatelessWidget {
           fontSize: radius * 0.65,
         ),
       ),
+    );
+  }
+}
+
+/// Verified Realtor Rewards, Part 1 — chat profile header badge. Watches
+/// `user_public/{userId}` directly since the conversation doc's own
+/// denormalized participant snapshot doesn't carry verification status.
+class _PeerVerifiedBadge extends StatelessWidget {
+  const _PeerVerifiedBadge({required this.userId});
+  final String userId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection(AppConstants.userPublicCollection)
+          .doc(userId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final status = snapshot.data?.data()?['verificationStatus'] as String?;
+        if ((status ?? '').toLowerCase() != 'verified') {
+          return const SizedBox.shrink();
+        }
+        return const Padding(
+          padding: EdgeInsets.only(left: 4),
+          child: PPVerifiedBadge(compact: true),
+        );
+      },
     );
   }
 }

@@ -88,6 +88,8 @@ String? _redirect({
   required bool isAnonymous,
   required bool isAdmin,
   required bool adminRoleResolved,
+  bool onboardingReady = true,
+  bool requiredRoleSelected = true,
 }) {
   if (initializing) {
     if (location == '/splash') return null;
@@ -98,6 +100,16 @@ String? _redirect({
     if (location == '/welcome' || location == '/onboarding') return null;
     if (location == '/auth' || location.startsWith('/auth/')) return null;
     return '/welcome';
+  }
+
+  if (isSignedIn &&
+      !isAnonymous &&
+      onboardingReady &&
+      adminRoleResolved &&
+      !isAdmin &&
+      !requiredRoleSelected &&
+      location != '/required-role') {
+    return '/required-role';
   }
 
   if (location.startsWith('/admin')) {
@@ -230,6 +242,39 @@ void main() {
     // Not yet resolved → should NOT block (let through, will re-evaluate)
     test('/admin → null while role unresolved', () =>
         expect(r('/admin'), isNull));
+  });
+
+  group('Router redirect logic — mandatory role picker', () {
+    String? r(
+      String loc, {
+      bool isAdmin = false,
+      bool isAnonymous = false,
+      bool onboardingReady = true,
+      bool requiredRoleSelected = false,
+    }) =>
+        _redirect(
+          location: loc,
+          initializing: false,
+          isSignedIn: true,
+          isAnonymous: isAnonymous,
+          isAdmin: isAdmin,
+          adminRoleResolved: true,
+          onboardingReady: onboardingReady,
+          requiredRoleSelected: requiredRoleSelected,
+        );
+
+    test('never selected on this device → /required-role', () =>
+        expect(r('/home'), '/required-role'));
+    test('already on /required-role → null (no redirect loop)', () =>
+        expect(r('/required-role'), isNull));
+    test('already selected → null (allowed through)', () => expect(
+        r('/home', requiredRoleSelected: true), isNull));
+    test('admin is exempt', () =>
+        expect(r('/home', isAdmin: true), isNull));
+    test('anonymous/guest is exempt', () =>
+        expect(r('/home', isAnonymous: true), isNull));
+    test('onboarding flag not yet loaded → does not redirect prematurely',
+        () => expect(r('/home', onboardingReady: false), isNull));
   });
 
   // ── GoRouter smoke test: verify createAppRouter builds without error ──────────

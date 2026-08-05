@@ -22,6 +22,8 @@ class HostBookingRow {
     required this.propertyId,
     required this.firestoreCollection,
     this.hostId,
+    this.guestId,
+    this.guestName,
     this.propertyTitle,
     this.propertyImageUrl,
     this.propertyAddress,
@@ -32,6 +34,7 @@ class HostBookingRow {
     this.currencyCode,
     this.numberOfGuests,
     this.paymentStatus,
+    this.cancellationPolicyId,
   });
 
   final String id;
@@ -41,6 +44,14 @@ class HostBookingRow {
 
   /// Host user id for messaging / routing (may be empty on legacy docs).
   final String? hostId;
+
+  /// Guest user id — needed to start a conversation from the host's
+  /// dashboard ("Message Guest"). Mirrors iOS `HostBooking.guestId`.
+  final String? guestId;
+
+  /// Denormalized at booking-creation time, same as iOS's `HostBooking.guestName`
+  /// (read straight off the booking doc, never a live join).
+  final String? guestName;
 
   final String? propertyTitle;
   final String? propertyImageUrl;
@@ -52,6 +63,13 @@ class HostBookingRow {
   final String? currencyCode;
   final int? numberOfGuests;
   final String? paymentStatus;
+
+  /// Present on the newer escrow-system bookings (`bookings` collection);
+  /// null on legacy `host_bookings` docs, which predate the tiered
+  /// cancellation-policy system. Used for the pre-cancellation refund
+  /// preview — `CancellationService.fetchPolicy` falls back to `flexible`
+  /// when this is null.
+  final String? cancellationPolicyId;
 
   factory HostBookingRow.fromDoc(
     String id,
@@ -119,16 +137,29 @@ class HostBookingRow {
             (data['payment_status'] as String?))
         ?.toLowerCase();
 
+    final cancellationPolicyId = data['cancellationPolicyId'] as String?;
+
     final hostRaw = data['hostId'] as String? ??
         data['host_id'] as String? ??
         data['hostUserId'] as String? ??
         data['host_user_id'] as String?;
+
+    final guestIdRaw = data['guestId'] as String? ??
+        data['guest_id'] as String? ??
+        data['userId'] as String? ??
+        data['user_id'] as String?;
+    final guestNameRaw = data['guestName'] as String? ??
+        data['guest_name'] as String? ??
+        data['userName'] as String? ??
+        data['user_name'] as String?;
 
     return HostBookingRow(
       id: id,
       propertyId: propertyId,
       firestoreCollection: fc,
       hostId: hostRaw?.trim().isEmpty == true ? null : hostRaw?.trim(),
+      guestId: guestIdRaw?.trim().isEmpty == true ? null : guestIdRaw?.trim(),
+      guestName: guestNameRaw?.trim().isEmpty == true ? null : guestNameRaw?.trim(),
       propertyTitle: data['propertyTitle'] as String? ??
           data['property_title'] as String?,
       propertyImageUrl: data['propertyImageURL'] as String? ??
@@ -143,6 +174,9 @@ class HostBookingRow {
       currencyCode: currency,
       numberOfGuests: guests,
       paymentStatus: payment,
+      cancellationPolicyId: cancellationPolicyId?.trim().isEmpty == true
+          ? null
+          : cancellationPolicyId?.trim(),
     );
   }
 

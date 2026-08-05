@@ -1,7 +1,11 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
+import '../../constants/app_constants.dart';
+import '../../models/moderation_flags.dart';
+import '../../providers/moderation_feature_flags_provider.dart';
 import '../../repositories/admin_repository.dart';
 import '../../utils/responsive.dart';
 
@@ -240,6 +244,24 @@ class _AdminSettingsTabState extends State<AdminSettingsTab> {
             ),
           ),
           const SizedBox(height: 20),
+          const _SectionTitle(title: 'Content Moderation'),
+          Text(
+            'Part 9 — each flag rolls out independently via config/moderationFeatureFlags. '
+            'Defaults to OFF; the pipeline is server-enforced so this toggle is the real switch, '
+            'not just a UI hint.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (final flag in ModerationFlag.values)
+                  _ModerationFlagTile(flag: flag),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
           const _SectionTitle(title: 'Admin Maintenance'),
           Card(
             margin: EdgeInsets.zero,
@@ -379,6 +401,52 @@ class _AdminSettingsTabState extends State<AdminSettingsTab> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// One row per [ModerationFlag] — reads live from
+/// [ModerationFeatureFlagsProvider] and writes directly to
+/// `config/moderationFeatureFlags` (allowed by the generic
+/// `config/{docId}` rule: `allow write: if isAdmin()`). No repository
+/// indirection needed for a single boolean field, same as how
+/// `config/aiFeatureFlags` has always been edited via Console/Admin SDK —
+/// this is the first in-app UI for either flags doc.
+class _ModerationFlagTile extends StatefulWidget {
+  const _ModerationFlagTile({required this.flag});
+  final ModerationFlag flag;
+
+  @override
+  State<_ModerationFlagTile> createState() => _ModerationFlagTileState();
+}
+
+class _ModerationFlagTileState extends State<_ModerationFlagTile> {
+  bool _saving = false;
+
+  Future<void> _toggle(bool value) async {
+    setState(() => _saving = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection(AppConstants.configCollection)
+          .doc('moderationFeatureFlags')
+          .set({widget.flag.wireValue: value}, SetOptions(merge: true));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = context.watch<ModerationFeatureFlagsProvider>().isEnabled(widget.flag);
+    return SwitchListTile(
+      title: Text(widget.flag.label),
+      subtitle: Text(widget.flag.description),
+      value: enabled,
+      onChanged: _saving ? null : _toggle,
     );
   }
 }

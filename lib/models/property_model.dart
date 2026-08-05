@@ -56,6 +56,13 @@ class PropertyModel {
     this.airbnbInfo,
     this.totalMessages,
     this.respondedMessages,
+    this.searchTags = const [],
+    this.searchRankingMultiplier,
+    this.nudgeCount = 0,
+    this.isVisibilityReduced = false,
+    this.statusUpdateRemindersSent = false,
+    this.autoDowngradeCount = 0,
+    this.isFlaggedForInactivity = false,
   });
 
   final String id;
@@ -124,6 +131,42 @@ class PropertyModel {
   final int? totalMessages;
   final int? respondedMessages;
 
+  /// Normalized, synonym-canonicalized search index — computed server-side
+  /// by `functions/search-tags-functions.js` (a Firestore trigger, fires on
+  /// every write from any client) whenever the document is created or
+  /// edited. Read-only from the app's perspective; never write this field
+  /// directly. Defaults to empty for documents the trigger hasn't (yet, or
+  /// ever, for very old rows) touched — search still works via the other
+  /// fields regardless, this only enriches matching. See
+  /// `lib/services/search/search_relevance.dart`.
+  final List<String> searchTags;
+
+  /// Trust-based ranking boost already computed nightly by
+  /// `trust-score-functions.js` (`calculateSearchRankingMultiplier`,
+  /// 0.9-1.25) — this field already existed in Firestore before Phase 2.5;
+  /// the app just wasn't reading it. Folded into relevance scoring so
+  /// search ranking builds on the same trust signal the rest of the app
+  /// already uses, rather than inventing a second one. Null (not 1.0) when
+  /// absent so callers can distinguish "no signal" from "neutral signal" —
+  /// scoring code treats null as 1.0.
+  final double? searchRankingMultiplier;
+
+  /// Times an inactivity nudge has been sent to the lister — iOS
+  /// `Property.nudgeCount` (`nudge_count` / `nudgeCount`).
+  final int nudgeCount;
+  /// True once the listing's search visibility has been reduced for
+  /// inactivity — iOS `Property.isVisibilityReduced`.
+  final bool isVisibilityReduced;
+  /// True once a status-update reminder has been sent — iOS
+  /// `Property.statusUpdateRemindersSent`.
+  final bool statusUpdateRemindersSent;
+  /// Count of automatic status downgrades applied for inactivity — iOS
+  /// `Property.autoDowngradeCount`.
+  final int autoDowngradeCount;
+  /// True once flagged for inactivity, surfacing the "Mark as Active"
+  /// recovery action — iOS `Property.isFlaggedForInactivity`.
+  final bool isFlaggedForInactivity;
+
   /// Trimmed development document id for navigation — iOS `linkedDevelopmentDocumentId`.
   String? get linkedDevelopmentDocumentId {
     final t = developmentId?.trim() ?? '';
@@ -134,6 +177,37 @@ class PropertyModel {
   bool get isAirbnbListing {
     final t = propertyType.toLowerCase().trim();
     return t == 'airbnb' || airbnbInfo != null;
+  }
+
+  /// True for any listing in the short-stay / Airbnb universe — the
+  /// authoritative definition used by the dedicated short-stay search
+  /// (`AirbnbSearchViewModel`, which queries `listing_type == short_stay`
+  /// OR `propertyType == airbnb`). Broader than [isAirbnbListing], which
+  /// predates the `short_stay` listingType convention and so silently
+  /// misses listings created under it (a real Ocho Rios / St. Mary
+  /// short-stay listing saved as `listingType: short_stay` with a plain
+  /// `propertyType` and no `airbnbInfo` would otherwise be invisible to
+  /// Pulse Finder's short-stay search). Used by
+  /// `PropertyRepository.watchFilteredListings` for the airbnb type filter.
+  bool get isShortStayListing {
+    final lt = listingType.toLowerCase().replaceAll(RegExp(r'[\s_\-]'), '');
+    return isAirbnbListing || lt == 'shortstay' || lt == 'airbnb';
+  }
+
+  /// Short-stay listings managed via Host Dashboard / Manage tab quotas —
+  /// iOS `Property.isShortStayHostListing`. Deliberately narrower than
+  /// [isShortStayListing]: it checks `listingType`/`propertyType` only and
+  /// does NOT fall back to [airbnbInfo], because some traditional for-sale
+  /// or for-rent listings still carry a stale `airbnbInfo` map left over
+  /// from older creation flows/migrations — treating that as authoritative
+  /// here would wrongly hide a real listing from My Listings (it belongs
+  /// there, not in the Host Dashboard). Use this getter, not
+  /// [isShortStayListing], to decide which listing-management screen a
+  /// property belongs in.
+  bool get isShortStayHostListing {
+    final lt = listingType.toLowerCase().replaceAll(RegExp(r'[\s_\-]'), '');
+    final t = propertyType.toLowerCase().trim();
+    return lt == 'shortstay' || lt == 'airbnb' || t == 'airbnb';
   }
 
   /// Guests may message/book; listers may not — iOS `canUserContactListing`.
@@ -523,6 +597,25 @@ class PropertyModel {
           (data['total_messages'] as num?)?.toInt(),
       respondedMessages: (data['respondedMessages'] as num?)?.toInt() ??
           (data['responded_messages'] as num?)?.toInt(),
+      searchTags: _stringList(data['searchTags']),
+      searchRankingMultiplier:
+          (data['searchRankingMultiplier'] as num?)?.toDouble(),
+      nudgeCount: (data['nudgeCount'] as num?)?.toInt() ??
+          (data['nudge_count'] as num?)?.toInt() ??
+          0,
+      isVisibilityReduced: data['isVisibilityReduced'] as bool? ??
+          data['is_visibility_reduced'] as bool? ??
+          false,
+      statusUpdateRemindersSent:
+          data['statusUpdateRemindersSent'] as bool? ??
+              data['status_update_reminders_sent'] as bool? ??
+              false,
+      autoDowngradeCount: (data['autoDowngradeCount'] as num?)?.toInt() ??
+          (data['auto_downgrade_count'] as num?)?.toInt() ??
+          0,
+      isFlaggedForInactivity: data['isFlaggedForInactivity'] as bool? ??
+          data['is_flagged_for_inactivity'] as bool? ??
+          false,
     );
   }
 
