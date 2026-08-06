@@ -557,6 +557,22 @@ class _HeroHeaderState extends State<_HeroHeader>
     return 'there';
   }
 
+  /// Up to 2 letters (e.g. "Roger Day" -> "RD") — matches the initials style
+  /// used elsewhere (property_card.dart's `_initials()`), unlike [_firstName]
+  /// above which is deliberately reduced to one word for the greeting text.
+  String get _avatarInitials {
+    final fullName = _profileFullName?.trim().isNotEmpty == true
+        ? _profileFullName!.trim()
+        : (widget.auth.user?.displayName?.trim() ?? '');
+    final parts = fullName
+        .split(RegExp(r'\s+'))
+        .where((p) => p.isNotEmpty)
+        .take(2)
+        .toList();
+    if (parts.isEmpty) return 'P';
+    return parts.map((p) => p[0]).join().toUpperCase();
+  }
+
   String get _greetingEmoji {
     final h = DateTime.now().hour;
     if (h >= 5 && h < 12) return '☀️';
@@ -730,10 +746,7 @@ class _HeroHeaderState extends State<_HeroHeader>
                                       child: widget.auth.user?.photoURL ==
                                               null
                                           ? Text(
-                                              _firstName.isNotEmpty
-                                                  ? _firstName[0]
-                                                      .toUpperCase()
-                                                  : 'P',
+                                              _avatarInitials,
                                               style: const TextStyle(
                                                 fontSize: 24,
                                                 fontWeight: FontWeight.bold,
