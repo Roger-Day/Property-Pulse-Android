@@ -127,8 +127,15 @@ class RoleSwitchService {
     final userRef = db.collection('users').doc(userId);
     final publicRef = db.collection('user_public').doc(userId);
 
+    // Firestore's `role` field must be the display-string form ("Property
+    // Seeker", "Realtor", ...) to satisfy the deployed security rules'
+    // `role in ["Property Seeker", ...]` allowlist (firestore-enhanced.rules)
+    // — the short internal code (`newRole` as passed in, e.g. "seeker")
+    // doesn't match and the write is silently rejected.
+    final displayRole = displayName(newRole);
+
     batch.update(userRef, {
-      'role': newRole,
+      'role': displayRole,
       'previousRole': currentRole,
       'lastRoleSwitchDate': Timestamp.now(),
       'roleSwitchCount': FieldValue.increment(1),
@@ -136,7 +143,7 @@ class RoleSwitchService {
     });
 
     batch.update(publicRef, {
-      'role': newRole,
+      'role': displayRole,
       'updatedAt': now,
     });
 

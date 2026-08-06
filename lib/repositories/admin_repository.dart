@@ -188,6 +188,19 @@ class AdminRepository {
       },
     );
 
+    // Mirrors iOS `updateApplicationStatus`'s `if status == .approved { try
+    // await promoteUserToAdmin(...) }` — previously missing here, so
+    // approving an application flipped only the application doc's own
+    // `status` field and never actually granted the applicant admin access.
+    if (status == 'approved' &&
+        applicantId != null &&
+        applicantId.isNotEmpty) {
+      await _promoteApplicantToAdmin(
+        userId: applicantId,
+        reviewedBy: reviewedBy ?? '',
+      );
+    }
+
     if (applicantId != null && applicantId.isNotEmpty) {
       await _notifyApplicantOfStatusChange(applicantId, status);
     }
@@ -306,6 +319,12 @@ class AdminRepository {
         );
   }
 
+  /// `user_public/{userId}` is intentionally NOT written here — its
+  /// Firestore rules only allow the document's own owner to update it (no
+  /// admin bypass), so an admin writing another user's `user_public.role`
+  /// directly is rejected. `functions/user-public-sync-functions.js`'s
+  /// `syncUserToPublicProfile` trigger mirrors `users/{uid}.role` into
+  /// `user_public/{uid}` server-side (Admin SDK, bypasses rules) instead.
   Future<void> setUserRole({
     required String userId,
     required String role,
@@ -314,12 +333,33 @@ class AdminRepository {
       'role': role,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-    await _db.collection(AppConstants.userPublicCollection).doc(userId).set({
-      'role': role,
+
+    await _audit.logUserUpdate(userId: userId, fields: const ['role']);
+  }
+
+  /// Promotes an approved admin applicant — mirrors iOS
+  /// `AdminApplicationService.promoteUserToAdmin`. Distinct from
+  /// [setUserRole] (a general role change) because approval also grants
+  /// verified/elite status, matching iOS's field set exactly. Like
+  /// [setUserRole], only writes `users/{userId}` — `user_public` is synced
+  /// server-side by `syncUserToPublicProfile` (see that method's doc comment).
+  Future<void> _promoteApplicantToAdmin({
+    required String userId,
+    required String reviewedBy,
+  }) async {
+    await _db.collection(AppConstants.usersCollection).doc(userId).set({
+      'role': 'Admin',
+      'adminPromotedAt': FieldValue.serverTimestamp(),
+      'adminPromotedBy': reviewedBy,
+      'verificationStatus': 'verified',
+      'verificationLevel': 'elite',
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    await _audit.logUserUpdate(userId: userId, fields: const ['role']);
+    await _audit.logUserUpdate(
+      userId: userId,
+      fields: const ['role', 'verificationStatus', 'verificationLevel'],
+    );
   }
 
   // ── properties (moderation / takedown) ────────────────────────────────────

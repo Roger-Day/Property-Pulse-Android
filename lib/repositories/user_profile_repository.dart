@@ -19,17 +19,27 @@ import '../models/public_profile_summary.dart';
 import '../models/listing_entitlements.dart';
 import '../models/user_data_export_snapshot.dart';
 import '../models/user_profile_doc.dart';
+import '../services/role_switch_service.dart';
 
 /// Result of watching both `users/{uid}` and `user_public/{uid}` for admin (iOS parity).
 class UserAdminRoleState {
   const UserAdminRoleState({
     required this.isAdmin,
     required this.resolved,
+    required this.requiredRoleSelected,
   });
 
   final bool isAdmin;
   /// True after at least one snapshot from each of `users` and `user_public`.
   final bool resolved;
+  /// True once `users/{uid}.requiredRoleSelected` is `true` — an explicit
+  /// server-side completion marker (not inferred from `role` being merely
+  /// present, which iOS can auto-default before the picker ever runs — see
+  /// `markRequiredRoleSelected()` in iOS's `AuthenticationViewModel+Firestore`).
+  /// Lets [UserRoleProvider] reconcile the device-local "required role
+  /// picker" flag against the account's actual server-side completion (see
+  /// [OnboardingProvider.requiredRoleSelected]).
+  final bool requiredRoleSelected;
 }
 
 class UserProfileStats {
@@ -128,6 +138,7 @@ class UserProfileRepository {
       controller.add(UserAdminRoleState(
         isAdmin: fromUsers || fromPublic,
         resolved: usersSeen && publicSeen,
+        requiredRoleSelected: usersData?['requiredRoleSelected'] == true,
       ));
     }
 
@@ -193,6 +204,7 @@ class UserProfileRepository {
     // Rewards, Part 6) depends on this being correct.
     final existingSnap = await usersRef.get();
     final hasCreatedAt = existingSnap.data()?['createdAt'] != null;
+    final hasRole = existingSnap.data()?['role'] != null;
 
     // Only seed fields that are not yet present (merge: true keeps existing data).
     final userPayload = <String, dynamic>{
@@ -201,6 +213,16 @@ class UserProfileRepository {
       if (displayName.isNotEmpty) 'fullName': displayName,
       if (photoUrl.isNotEmpty) 'profileImageURL': photoUrl,
       if (!hasCreatedAt) 'createdAt': FieldValue.serverTimestamp(),
+      // A placeholder, not a real choice — `requiredRoleSelected` (set only
+      // by setInitialRole) is what actually gates the mandatory role picker,
+      // so seeding this doesn't let anyone skip it. It exists so `role`
+      // is never entirely absent from the document: the deployed security
+      // rule's update check (firestore-enhanced.rules, `match
+      // /users/{userId}`) reads `resource.data.role` directly, and a
+      // missing field there fails rule evaluation and denies the write —
+      // which would otherwise silently break the very first
+      // `setInitialRole` call for every brand-new account.
+      if (!hasRole) 'role': 'Property Seeker',
     };
     final publicPayload = <String, dynamic>{
       'uid': uid,
@@ -538,18 +560,30 @@ class UserProfileRepository {
             orElse: () => ListingUserType.seeker,
           );
 
+    // Firestore's `role` field is stored in display-string form ("Property
+    // Seeker", "Realtor", ...) — matching iOS's `UserRole.rawValue` and the
+    // deployed security rules' `role in ["Property Seeker", ...]` allowlist
+    // (firestore-enhanced.rules). Writing the short internal code here
+    // (previously `role` verbatim, e.g. "seeker") doesn't match that
+    // allowlist and gets silently rejected — the surrounding try/catch in
+    // required_role_screen.dart's `_select()` swallows the resulting
+    // permission-denied error, so the local onboarding flag still advances
+    // the user past the picker even though nothing was actually saved.
+    final displayRole = RoleSwitchService.displayName(role);
+
     final batch = _db.batch();
     final userRef = _db.collection(AppConstants.usersCollection).doc(userId);
     final publicRef =
         _db.collection(AppConstants.userPublicCollection).doc(userId);
     batch.set(userRef, {
-      'role': role,
+      'role': displayRole,
       'userType': entitlementsType.name,
       'activeListingLimit': ListingEntitlements.baseLimit(entitlementsType),
+      'requiredRoleSelected': true,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     batch.set(publicRef, {
-      'role': role,
+      'role': displayRole,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await batch.commit();

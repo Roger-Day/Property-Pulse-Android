@@ -4,16 +4,19 @@ import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 
 import '../repositories/user_profile_repository.dart';
 import 'auth_provider.dart';
+import 'onboarding_provider.dart';
 
 /// Watches `users/{uid}` and `user_public/{uid}` for admin — same merge as iOS `AuthenticationViewModel`.
 class UserRoleProvider extends ChangeNotifier {
-  UserRoleProvider(this._auth, this._repo) {
+  UserRoleProvider(this._auth, this._repo, {OnboardingProvider? onboarding})
+      : _onboarding = onboarding {
     _auth.addListener(_onAuthChanged);
     _onAuthChanged();
   }
 
   final AuthProvider _auth;
   final UserProfileRepository _repo;
+  final OnboardingProvider? _onboarding;
   StreamSubscription<UserAdminRoleState>? _sub;
 
   bool _resolved = false;
@@ -47,6 +50,18 @@ class UserRoleProvider extends ChangeNotifier {
       _resolved = state.resolved;
       _isAdmin = state.isAdmin;
       notifyListeners();
+
+      // Reconcile the device-local "required role picker" flag against the
+      // account's actual server-side role. Without this, an existing user
+      // whose local flag was lost (reinstall, cleared app storage, new
+      // device) gets bounced back to the mandatory role picker even though
+      // their account already has a role — see required_role_screen.dart.
+      final onboarding = _onboarding;
+      if (state.requiredRoleSelected &&
+          onboarding != null &&
+          !onboarding.requiredRoleSelected) {
+        onboarding.markRequiredRoleSelected();
+      }
     });
   }
 

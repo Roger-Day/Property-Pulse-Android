@@ -1586,7 +1586,15 @@ class _ProfileBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final trimmed = imageUrl?.trim();
+    var trimmed = imageUrl?.trim();
+    // Stale ui-avatars.com URLs baked in at account-creation time (e.g.
+    // "US" generated from the placeholder name "User") never get revisited
+    // once the account's real name is set. No code path generates these
+    // anymore, so treat any as absent and fall back to initials computed
+    // from the current name instead.
+    if (trimmed != null && trimmed.contains('ui-avatars.com')) {
+      trimmed = null;
+    }
     final fallback = Container(
       width: size,
       height: size,

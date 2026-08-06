@@ -165,16 +165,6 @@ class _SignInScreenState extends State<SignInScreen> {
                       );
                     },
                   ),
-                  _SocialButton(
-                    icon: Icons.phone_outlined,
-                    label: 'Sign in with phone',
-                    busy: _busy,
-                    onPressed: () {
-                      PPHaptics.light();
-                      AnalyticsService.logAuthMethodSelected('phone');
-                      context.push('/auth/phone');
-                    },
-                  ),
                   const SizedBox(height: PPSpacing.lg),
 
                   // ── Divider "or email" ──────────────────────────────────

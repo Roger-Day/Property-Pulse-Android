@@ -120,7 +120,7 @@ Future<void> main() async {
   final themeNotifier = ThemeModeNotifier();
   await themeNotifier.load();
   final userProfileRepo = UserProfileRepository(FirebaseFirestore.instance);
-  final userRole = UserRoleProvider(auth, userProfileRepo);
+  final userRole = UserRoleProvider(auth, userProfileRepo, onboarding: onboarding);
   final router = createAppRouter(auth, userRole, onboarding);
   PushNotificationService.setRouter(router);
   unawaited(AnalyticsService.logAppOpen());
