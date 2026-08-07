@@ -12,6 +12,7 @@
 // MyListingsScreen's own AppBar title) regardless of which segment is
 // active. The reliable signal for "which segment is active" is the
 // IndexedStack's own `index`, not text visibility.
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
@@ -24,7 +25,18 @@ import 'package:property_pulse/repositories/user_profile_repository.dart';
 import 'package:property_pulse/screens/profile/realtor_workspace_screen.dart';
 import 'package:property_pulse/services/in_app_billing_service.dart';
 
+// ignore_for_file: subtype_of_sealed_class
+
 const _uid = 'host-uid-1';
+
+// Stubs FirebaseFunctions so UserProfileRepository's constructor doesn't
+// fall through to FirebaseFunctions.instanceFor(), which requires
+// Firebase.initializeApp() and throws `[core/no-app]` under a plain widget
+// test — same pattern as pulse_finder_conversation_controller_test.dart.
+class _FakeFirebaseFunctions implements FirebaseFunctions {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 // ── Minimal fake AuthProvider — same pattern as the other harness tests ──
 
@@ -80,7 +92,7 @@ Widget _wrap(FakeFirebaseFirestore db) {
         value: _FakeAuthProvider(MockUser(uid: _uid)),
       ),
       Provider<UserProfileRepository>.value(
-        value: UserProfileRepository(db),
+        value: UserProfileRepository(db, functions: _FakeFirebaseFunctions()),
       ),
       Provider<PropertyRepository>.value(value: propertyRepo),
       ChangeNotifierProvider<InAppBillingService>(

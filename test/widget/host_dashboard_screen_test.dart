@@ -13,6 +13,7 @@
 // already used; the listings count moved to
 // PropertyRepository.watchHostListingsCount.
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:firebase_auth_mocks/firebase_auth_mocks.dart';
@@ -24,7 +25,19 @@ import 'package:property_pulse/repositories/property_repository.dart';
 import 'package:property_pulse/repositories/user_profile_repository.dart';
 import 'package:property_pulse/screens/profile/host_dashboard_screen.dart';
 
+// ignore_for_file: subtype_of_sealed_class
+
 const _uid = 'host-uid-1';
+
+// Stubs FirebaseFunctions so UserProfileRepository's constructor doesn't
+// fall through to FirebaseFunctions.instanceFor(), which requires
+// Firebase.initializeApp() and throws `[core/no-app]` under a plain widget
+// test — same pattern as pulse_finder_conversation_controller_test.dart.
+// None of these tests call anything that invokes a method on it.
+class _FakeFirebaseFunctions implements FirebaseFunctions {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 // ── Minimal fake AuthProvider — same pattern as sign_in_screen_test.dart ──
 
@@ -117,7 +130,7 @@ Widget _wrap(FakeFirebaseFirestore db, {fb.User? user}) {
         value: _FakeAuthProvider(resolvedUser),
       ),
       Provider<UserProfileRepository>.value(
-        value: UserProfileRepository(db),
+        value: UserProfileRepository(db, functions: _FakeFirebaseFunctions()),
       ),
       Provider<PropertyRepository>.value(
         value: PropertyRepository(db),

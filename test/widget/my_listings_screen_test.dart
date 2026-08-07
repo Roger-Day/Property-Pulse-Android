@@ -5,6 +5,7 @@
 // `airbnbInfo` map must render in My Listings, while a genuine short-stay
 // listing must not (see PropertyModel.isShortStayHostListing and the
 // short_stay_host_listing_cases.json parity fixture).
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,7 +15,18 @@ import 'package:property_pulse/repositories/user_profile_repository.dart';
 import 'package:property_pulse/screens/profile/my_listings_screen.dart';
 import 'package:property_pulse/services/in_app_billing_service.dart';
 
+// ignore_for_file: subtype_of_sealed_class
+
 const _uid = 'host-uid-1';
+
+// Stubs FirebaseFunctions so UserProfileRepository's constructor doesn't
+// fall through to FirebaseFunctions.instanceFor(), which requires
+// Firebase.initializeApp() and throws `[core/no-app]` under a plain widget
+// test — same pattern as pulse_finder_conversation_controller_test.dart.
+class _FakeFirebaseFunctions implements FirebaseFunctions {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 Future<FakeFirebaseFirestore> _seedFirestore({
   required List<Map<String, dynamic>> properties,
@@ -54,7 +66,7 @@ Widget _wrap(FakeFirebaseFirestore db) {
   return MultiProvider(
     providers: [
       Provider<UserProfileRepository>.value(
-        value: UserProfileRepository(db),
+        value: UserProfileRepository(db, functions: _FakeFirebaseFunctions()),
       ),
       Provider<PropertyRepository>.value(value: propertyRepo),
       ChangeNotifierProvider<InAppBillingService>(
