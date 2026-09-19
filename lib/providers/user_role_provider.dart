@@ -49,7 +49,6 @@ class UserRoleProvider extends ChangeNotifier {
     _sub = _repo.watchAdminRole(user.uid).listen((state) {
       _resolved = state.resolved;
       _isAdmin = state.isAdmin;
-      notifyListeners();
 
       // Reconcile the device-local "required role picker" flag against the
       // account's actual server-side role. Without this, an existing user
@@ -60,8 +59,13 @@ class UserRoleProvider extends ChangeNotifier {
       if (state.requiredRoleSelected &&
           onboarding != null &&
           !onboarding.requiredRoleSelected) {
+        // Sets the flag synchronously (its async part is only the prefs
+        // write), so it must run BEFORE notifyListeners() below — otherwise
+        // the router sees `resolved` with the stale local flag and redirects
+        // an existing account to /required-role first.
         onboarding.markRequiredRoleSelected();
       }
+      notifyListeners();
     });
   }
 

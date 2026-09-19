@@ -46,11 +46,21 @@ class PulseFinderIntentLock {
       'holiday rental',
       'short-term rental',
       'short term rental',
+      // Plurals — word-boundary matching (unlike the old substring match)
+      // doesn't catch them from the singular.
+      'short stays',
+      'short-stays',
+      'airbnbs',
+      'vacation rentals',
+      'holiday rentals',
+      'short-term rentals',
+      'short term rentals',
     ])) {
       return PulseFinderIntent.shortStay;
     }
     if (_matchesAny(lower, const [
-      'buy', 'buying', 'purchase', 'purchasing',
+      'buy', 'buying', 'buyer', 'buyers', 'bought',
+      'purchase', 'purchased', 'purchasing',
       // Idiomatic phrasings that unambiguously mean "I want to buy" in
       // real-estate conversation, even though they never use the word "buy"
       // itself — seen dead-ending a real conversation ("help me find a
@@ -65,23 +75,32 @@ class PulseFinderIntentLock {
     ])) {
       return PulseFinderIntent.buy;
     }
-    if (_matchesAny(lower, const ['rent', 'rental', 'renting', 'lease', 'leasing'])) {
+    if (_matchesAny(lower, const [
+      'rent', 'rental', 'rentals', 'renting', 'rents', 'rented',
+      'renter', 'renters',
+      'lease', 'leases', 'leasing', 'leased',
+    ])) {
       return PulseFinderIntent.rent;
     }
-    if (_matchesAny(lower, const ['commercial', 'office space', 'warehouse', 'retail space'])) {
+    if (_matchesAny(lower, const [
+      'commercial', 'office space', 'office spaces', 'warehouse',
+      'warehouses', 'retail space', 'retail spaces',
+    ])) {
       return PulseFinderIntent.commercial;
     }
     if (_matchesAny(lower, const [
       'development',
+      'developments',
       'pre-construction',
       'preconstruction',
       'off-plan',
       'off plan',
       'new project',
+      'new projects',
     ])) {
       return PulseFinderIntent.development;
     }
-    if (_matchesAny(lower, const ['auction'])) {
+    if (_matchesAny(lower, const ['auction', 'auctions', 'auctioned'])) {
       return PulseFinderIntent.auction;
     }
     return null;
@@ -121,5 +140,17 @@ class PulseFinderIntentLock {
     return currentIntent;
   }
 
-  static bool _matchesAny(String text, List<String> phrases) => phrases.any(text.contains);
+  // Word-boundary matching, not plain substring — mirrors
+  // PulseFinderPropertyTypeDetector._containsWord for the identical reason:
+  // plain `contains` false-positives on ordinary words that happen to embed
+  // a trigger ("current"/"different"/"parents" all contain "rent", "release"
+  // contains "lease"), which was silently hijacking the locked search intent
+  // mid-conversation off phrases that have nothing to do with renting.
+  static bool _matchesAny(String text, List<String> phrases) =>
+      phrases.any((phrase) => _containsWord(text, phrase));
+
+  static bool _containsWord(String text, String phrase) {
+    final pattern = RegExp('\\b${RegExp.escape(phrase)}\\b');
+    return pattern.hasMatch(text);
+  }
 }

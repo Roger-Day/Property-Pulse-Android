@@ -79,7 +79,13 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
     if (error != null) {
       _showAlert(title: 'Role Switch Failed', message: error);
     } else {
-      widget.onRoleChanged(role);
+      // Callers (EditProfileScreen) compare this against display-string
+      // role labels (e.g. ProfileRoleLabels.owner == "Property Owner"),
+      // matching what RoleSwitchService.switchRole just wrote to Firestore
+      // — passing the raw short code ("owner") desynced the two, hiding
+      // the role-specific section and making the next Save silently fail
+      // Firestore's role-string allowlist.
+      widget.onRoleChanged(RoleSwitchService.displayName(role));
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -118,7 +124,7 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
                 'Switch from ${RoleSwitchService.displayName(_currentRole)} to ${RoleSwitchService.displayName(newRole)}?'),
             const SizedBox(height: 8),
             Text(
-              'You can switch roles again in $_daysLeft days after this change.',
+              'You can switch roles again in ${RoleSwitchService.cooldownDays} days after this change.',
               style: const TextStyle(
                   fontSize: 12, color: AppColors.textSecondary),
             ),
@@ -186,7 +192,10 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             children: RoleSwitchService.selectableRoles.map((role) {
-              final isCurrent = role.toLowerCase() == _currentRole;
+              // `_currentRole` keeps its camelCase form ('airbnbHost'), so
+              // lower-casing only the chip's side made that chip never match.
+              final isCurrent =
+                  role.toLowerCase() == _currentRole.toLowerCase();
               final isPrev = _previousRole.isNotEmpty &&
                   role.toLowerCase() == _previousRole &&
                   !isCurrent;

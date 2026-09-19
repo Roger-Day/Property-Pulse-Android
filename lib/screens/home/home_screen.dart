@@ -66,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen>
   late final Stream<List<PropertyModel>> _homePropertyPoolStream;
   late final Stream<List<PropertyModel>> _mostViewedStream;
   late final Stream<List<ProjectModel>> _homeProjectsStream;
+  late final Stream<List<PropertyModel>> _airbnbStream;
   Stream<List<PropertyModel>> _nearbyStream = const Stream.empty();
 
   @override
@@ -84,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen>
       _homePropertyPoolStream = repo.watchHomePropertyPool();
       _mostViewedStream = repo.watchMostViewedListings();
       _homeProjectsStream = projects.watchHomeProjects();
+      _airbnbStream = repo.watchAirbnbListings();
       _streamsInitialised = true;
     }
   }
@@ -340,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen>
                 // ── Airbnb Short Stays (iOS AirbnbStaysSection) ─────────
                 SliverToBoxAdapter(
                   child: StreamBuilder<List<PropertyModel>>(
-                    stream: context.read<PropertyRepository>().watchAirbnbListings(),
+                    stream: _airbnbStream,
                     builder: (context, airbnbSnap) {
                       final airbnbProps = airbnbSnap.data ?? [];
                       if (airbnbProps.isEmpty) return const SizedBox.shrink();

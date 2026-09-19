@@ -6,6 +6,7 @@ import '../constants/app_constants.dart';
 import '../models/property_model.dart';
 import '../services/search/location_search_service.dart';
 import '../services/search/search_relevance.dart';
+import '../utils/listing_expiration_policy.dart';
 import '../utils/location_match.dart';
 
 /// Filter parameters used by [PropertyRepository.watchFilteredListings].
@@ -317,11 +318,13 @@ class PropertyRepository {
     int limit = 6,
   }) {
     if (city.trim().isEmpty) return Stream.value([]);
+    // No server-side `deleted` filter — see _baseQuery()'s comment:
+    // `isEqualTo: false` silently drops docs missing the field. _mapSnapshot
+    // already applies the equivalent client-side check.
     return _db
         .collection(AppConstants.propertiesCollection)
         .where('city', isEqualTo: city.trim())
         .where('propertyType', isEqualTo: propertyType)
-        .where('deleted', isEqualTo: false)
         .limit(limit + 1)
         .snapshots()
         .map((snap) => _mapSnapshot(snap)
@@ -332,9 +335,9 @@ class PropertyRepository {
 
   /// Airbnb-style short-stay listings — listingType == 'airbnb'.
   Stream<List<PropertyModel>> watchAirbnbListings() {
+    // No server-side `deleted` filter — see _baseQuery()'s comment.
     return _db
         .collection(AppConstants.propertiesCollection)
-        .where('deleted', isEqualTo: false)
         .where('listingType', isEqualTo: 'airbnb')
         .limit(50)
         .snapshots()
@@ -445,7 +448,37 @@ class PropertyRepository {
     // scales the raw fetch proportionally so "load more" still has enough
     // raw docs to filter from, instead of shrinking the pool to the page size.
     final desiredResultCount = limitOverride ?? AppConstants.propertiesPageSize;
-    final fetchLimit = isAirbnbTypeFilter
+    // Same truncate-before-filter problem for the other client-side filters
+    // (listing type, status, city/state/zip, amenities, sqft, feature
+    // toggles, dates, verified, query, currency, min price): a 20-doc window
+    // can filter down to a handful, so "Load more" (which only shows when a
+    // full page survives) vanishes even though more matches exist. Widen the
+    // pool whenever any of them is active and cap the survivors below.
+    final hasClientSideFilter = isAirbnbTypeFilter ||
+        filter.query.isNotEmpty ||
+        filter.minBathrooms > 0 ||
+        filter.currencyCode != null ||
+        filter.minPrice != null ||
+        filter.listingType != null ||
+        filter.status != null ||
+        filter.city.isNotEmpty ||
+        filter.state.isNotEmpty ||
+        filter.zipCode.isNotEmpty ||
+        filter.amenities.isNotEmpty ||
+        filter.minSquareFootage != null ||
+        filter.maxSquareFootage != null ||
+        filter.hasPool ||
+        filter.hasGarage ||
+        filter.hasGarden ||
+        filter.hasParking ||
+        filter.hasElevator ||
+        filter.hasBalcony ||
+        filter.petFriendly ||
+        filter.furnished ||
+        filter.verifiedRealtorsOnly ||
+        filter.dateFrom != null ||
+        filter.dateTo != null;
+    final fetchLimit = hasClientSideFilter
         ? (AppConstants.clientSideTypeFilterPoolSize *
                 (desiredResultCount / AppConstants.propertiesPageSize))
             .ceil()
@@ -660,7 +693,7 @@ class PropertyRepository {
       // see the same result-count semantics as every other filtered search.
       // Applied AFTER the sort, so it keeps the most relevant/appropriate
       // page rather than an arbitrary prefix.
-      if (isAirbnbTypeFilter && list.length > desiredResultCount) {
+      if (hasClientSideFilter && list.length > desiredResultCount) {
         list = list.sublist(0, desiredResultCount);
       }
 
@@ -740,6 +773,15 @@ class PropertyRepository {
         for (final d in docsB) {
           byId[d.id] = <String, dynamic>{'id': d.id, ...d.data()};
         }
+        // "Delete conversation" (messages_screen.dart) writes
+        // deletedFor.$userId = true rather than actually deleting the doc
+        // (the other participant should keep their own copy) — this was
+        // previously never read anywhere, so a "deleted" thread reappeared
+        // immediately on the next snapshot.
+        byId.removeWhere((_, data) {
+          final deletedFor = data['deletedFor'];
+          return deletedFor is Map && deletedFor[userId] == true;
+        });
         final list = byId.values.toList();
         list.sort((a, b) {
           final aTs = a['lastMessageAt'];
@@ -1312,15 +1354,26 @@ class PropertyRepository {
     });
   }
 
-  Future<void> renewListing(String id) async {
+  Future<void> renewListing(PropertyModel property) async {
     final now = DateTime.now();
-    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
+    // Renewal grant follows the same rent-vs-sale policy as initial listing
+    // creation (30 vs 365 days) — a flat 30-day renewal was silently
+    // shortening "for sale" listings, which should get a year.
+    final newExpiry = ListingExpirationPolicy.expiresAt(
+      propertyTypeLower: property.propertyType,
+      listingTypeLower: property.listingType,
+      createdAt: now,
+    );
+    await _db
+        .collection(AppConstants.propertiesCollection)
+        .doc(property.id)
+        .update({
       'status': 'available',
       'isFeatured': false,
       'featuredUntil': FieldValue.delete(),
       // Mirror iOS ListingExpirationViewModel.renewListing — set new expiry date
       // so the listing is visible again immediately without waiting for Cloud Function.
-      'expirationDate': Timestamp.fromDate(now.add(const Duration(days: 30))),
+      if (newExpiry != null) 'expirationDate': Timestamp.fromDate(newExpiry),
       'lastRenewalDate': Timestamp.fromDate(now),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -1573,10 +1626,13 @@ class PropertyRepository {
         // If the property is expired by date but status hasn't been updated yet,
         // write back to Firestore so the cache stays consistent and other clients
         // see the correct status immediately (mirrors iOS "extra safety layer").
+        // Only statuses the server-side expiry job also flips
+        // (available/pending/active) — writing 'expired' over a deliberate
+        // 'sold'/'rented' status let an owner's finished listing come back
+        // as "expired" with a Renew button that re-listed it.
         if (p.isExpired &&
-            p.status.toLowerCase() != 'expired' &&
-            p.status.toLowerCase() != 'archived' &&
-            p.status.toLowerCase() != 'deleted') {
+            const {'available', 'pending', 'active'}
+                .contains(p.status.toLowerCase().trim())) {
           markListingExpired(doc.id);
         }
         continue;

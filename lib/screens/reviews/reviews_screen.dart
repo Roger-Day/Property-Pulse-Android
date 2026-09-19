@@ -106,7 +106,7 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
     // Use isListerUser() to cover realtorId, ownerId, and hostUserId — mirrors
     // iOS canUserReviewListing which delegates to canUserContactListing.
     final isOwnListing = widget.property.isListerUser(auth.user?.uid);
-    final canReview = auth.isSignedIn && !auth.isAnonymous && !isOwnListing;
+    final canReviewBase = auth.isSignedIn && !auth.isAnonymous && !isOwnListing;
     final hasActiveFilter = !_filter.isDefault || _sort != _ReviewSort.mostRecent;
 
     return Scaffold(
@@ -127,11 +127,29 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
               },
             ),
           ),
-          if (canReview)
-            TextButton(
-              onPressed: _openAddReview,
-              child: const Text('Add Review'),
-            ),
+          // A second StreamBuilder on the same broadcast Firestore stream —
+          // needs `allReviews` to know whether this user already reviewed,
+          // which isn't available up here before the body's StreamBuilder emits.
+          StreamBuilder<List<ReviewModel>>(
+            stream: _stream,
+            builder: (context, snap) {
+              final alreadyReviewed = auth.isSignedIn &&
+                  (snap.data ?? const <ReviewModel>[])
+                      .any((r) => r.userId == auth.user?.uid);
+              // Hidden until the first snapshot — before it, `alreadyReviewed`
+              // is unknowable and the button flashed for users who already
+              // reviewed.
+              if (!canReviewBase ||
+                  alreadyReviewed ||
+                  snap.connectionState == ConnectionState.waiting) {
+                return const SizedBox.shrink();
+              }
+              return TextButton(
+                onPressed: _openAddReview,
+                child: const Text('Add Review'),
+              );
+            },
+          ),
         ],
       ),
       body: StreamBuilder<List<ReviewModel>>(
@@ -143,6 +161,11 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
           final allReviews = snap.data ?? [];
           final reviews = _applyFilter(allReviews);
           final stats = ReviewStats.fromReviews(allReviews); // stats always from full list
+          // A user can submit at most one review per property — see
+          // UserProfileRepository.addReview.
+          final alreadyReviewed = auth.isSignedIn &&
+              allReviews.any((r) => r.userId == auth.user?.uid);
+          final canReview = canReviewBase && !alreadyReviewed;
 
           return CustomScrollView(
             slivers: [
@@ -552,12 +575,22 @@ class _ReviewCardState extends State<_ReviewCard> {
 
   ReviewModel get review => widget.review;
 
+  // True once the live review doc itself lists this user as a voter — from
+  // then on `review.helpfulCount` already includes their vote.
+  bool get _serverHasMyVote {
+    final uid = context.read<AuthProvider>().user?.uid;
+    return uid != null && review.helpfulVoterIds.contains(uid);
+  }
+
   @override
   Widget build(BuildContext context) {
     final dateStr = DateFormat.yMMMd().format(review.date);
     final initials = _initials(review.userName);
+    // Local +1 only until the live doc reflects the vote — adding it on top
+    // of a count that already includes it displayed +2.
+    final alreadyVoted = _serverHasMyVote;
     final displayHelpfulCount =
-        review.helpfulCount + (_helpfulTapped ? 1 : 0);
+        review.helpfulCount + (_helpfulTapped && !alreadyVoted ? 1 : 0);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -681,7 +714,7 @@ class _ReviewCardState extends State<_ReviewCard> {
               const Spacer(),
               // ── Helpful button (iOS helpfulCount) ────────────────────
               GestureDetector(
-                onTap: _helpfulTapped
+                onTap: (_helpfulTapped || alreadyVoted)
                     ? null
                     : () async {
                         final auth = context.read<AuthProvider>();
@@ -694,9 +727,15 @@ class _ReviewCardState extends State<_ReviewCard> {
                         }
                         setState(() => _helpfulTapped = true);
                         try {
-                          await context
+                          final recorded = await context
                               .read<UserProfileRepository>()
-                              .markReviewHelpful(review.id);
+                              .markReviewHelpful(review.id, auth.user!.uid);
+                          // Already voted in an earlier session — the
+                          // in-memory +1 above would double-count against
+                          // the unchanged server total, so drop it.
+                          if (!recorded && mounted) {
+                            setState(() => _helpfulTapped = false);
+                          }
                         } catch (_) {
                           if (mounted) setState(() => _helpfulTapped = false);
                         }
@@ -1043,7 +1082,9 @@ class _AddReviewSheetState extends State<_AddReviewSheet> {
       Navigator.of(context).pop();
     } catch (e) {
       setState(() {
-        _error = 'Failed to submit review. Please try again.';
+        _error = e is StateError
+            ? e.message
+            : 'Failed to submit review. Please try again.';
         _submitting = false;
       });
     }

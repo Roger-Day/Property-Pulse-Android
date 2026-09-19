@@ -3,9 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/development_editor_catalog.dart';
+import '../../models/development_team_role.dart';
 import '../../models/project_model.dart';
 import '../../models/project_unit_type_model.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/user_role_provider.dart';
 import '../../repositories/project_repository.dart';
+import '../../utils/effective_development_role.dart';
+import '../../utils/team_access_permissions.dart';
 
 /// Aligns with iOS `ProjectEditorView` — top-level `projects/{id}` fields (URLs as lines; no Storage upload).
 class EditDevelopmentScreen extends StatefulWidget {
@@ -16,6 +21,7 @@ class EditDevelopmentScreen extends StatefulWidget {
   });
 
   final String projectId;
+
   /// When true the screen was opened to create a new development (modal sheet).
   /// Affects the AppBar title and is used to show "New development" instead of "Edit development".
   final bool isCreating;
@@ -176,9 +182,11 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
     _selectedAmenities = Set<String>.from(p.amenities);
     _selectedFeatureKeys = Set<String>.from(p.developmentFeatureTypes);
 
-    final known = DevelopmentEditorCatalog.projectStatuses.map((e) => e.raw).toSet();
-    _statusRaw =
-        known.contains(p.statusRaw) ? p.statusRaw : (p.statusRaw.isNotEmpty ? p.statusRaw : 'planning');
+    final known =
+        DevelopmentEditorCatalog.projectStatuses.map((e) => e.raw).toSet();
+    _statusRaw = known.contains(p.statusRaw)
+        ? p.statusRaw
+        : (p.statusRaw.isNotEmpty ? p.statusRaw : 'planning');
 
     _isActive = p.isActive;
     _expiresEnabled = p.expiresAt != null;
@@ -214,17 +222,18 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
   /// without re-entering every field.
   void _duplicateUnitType(int index) {
     final source = _unitForms[index];
-    final copy = _UnitTypeForm(id: 'ut_${DateTime.now().microsecondsSinceEpoch}')
-      ..name.text = source.name.text
-      ..bedrooms.text = source.bedrooms.text
-      ..bathrooms.text = source.bathrooms.text
-      ..price.text = source.price.text
-      ..currency.text = source.currency.text
-      ..sqft.text = source.sqft.text
-      ..totalUnits.text = source.totalUnits.text
-      ..availableUnits.text = source.availableUnits.text
-      ..interiorUrls.text = source.interiorUrls.text
-      ..floorUrls.text = source.floorUrls.text;
+    final copy =
+        _UnitTypeForm(id: 'ut_${DateTime.now().microsecondsSinceEpoch}')
+          ..name.text = source.name.text
+          ..bedrooms.text = source.bedrooms.text
+          ..bathrooms.text = source.bathrooms.text
+          ..price.text = source.price.text
+          ..currency.text = source.currency.text
+          ..sqft.text = source.sqft.text
+          ..totalUnits.text = source.totalUnits.text
+          ..availableUnits.text = source.availableUnits.text
+          ..interiorUrls.text = source.interiorUrls.text
+          ..floorUrls.text = source.floorUrls.text;
     setState(() => _unitForms.insert(index + 1, copy));
   }
 
@@ -344,502 +353,569 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
   @override
   Widget build(BuildContext context) {
     final repo = context.read<ProjectRepository>();
+    final auth = context.watch<AuthProvider>();
+    final userRole = context.watch<UserRoleProvider>();
+    final uid = auth.user?.uid;
+    final title =
+        Text(widget.isCreating ? 'New development' : 'Edit development');
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.isCreating ? 'New development' : 'Edit development'),
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : () => _save(context),
-            child: _saving
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Save'),
-          ),
-        ],
-      ),
-      body: StreamBuilder<ProjectModel?>(
-        stream: repo.watchProject(widget.projectId),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(child: Text(snapshot.error.toString()));
-          }
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final p = snapshot.data;
-          if (p == null) {
-            return const Center(child: Text('Project not found.'));
-          }
-          if (!_seeded) {
-            _applyProject(p);
-            _seeded = true;
-          }
+    if (uid == null) {
+      return Scaffold(
+        appBar: AppBar(title: title),
+        body: const Center(child: Text('Sign in to edit this development.')),
+      );
+    }
 
-          final catalogAmenitySet =
-              DevelopmentEditorCatalog.amenities.toSet();
-          final extraAmenities = p.amenities
-              .where((a) => !catalogAmenitySet.contains(a))
-              .toSet();
+    return StreamBuilder<ProjectModel?>(
+      stream: repo.watchProject(widget.projectId),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: title),
+            body: Center(child: Text(snapshot.error.toString())),
+          );
+        }
+        if (!snapshot.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: title),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
+        final p = snapshot.data;
+        if (p == null) {
+          return Scaffold(
+            appBar: AppBar(title: title),
+            body: const Center(child: Text('Project not found.')),
+          );
+        }
+        if (!_seeded) {
+          _applyProject(p);
+          _seeded = true;
+        }
 
-          final catalogFeatureKeys = DevelopmentEditorCatalog
-              .developmentFeatureTypes
-              .map((e) => e.key)
-              .toSet();
-          final extraFeatures = p.developmentFeatureTypes
-              .where((k) => !catalogFeatureKeys.contains(k))
-              .toList();
-
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-            children: [
-              _sectionTitle(context, 'Basic info'),
-              TextField(
-                controller: _projectName,
-                decoration: const InputDecoration(
-                  labelText: 'Development name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _developerName,
-                decoration: const InputDecoration(
-                  labelText: 'Developer / company name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _developerId,
-                decoration: const InputDecoration(
-                  labelText: 'Developer ID',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _location,
-                decoration: const InputDecoration(
-                  labelText: 'Location',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _totalUnits,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Total units (optional)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Development types',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+        // Only the development's Owner/Manager (or an app admin) may edit
+        // it — this screen and its route previously had no access check at
+        // all, so any signed-in user who knew/guessed a project id could
+        // deep-link straight here and overwrite arbitrary fields via
+        // mergeProjectFields. Same permission the toolbar already uses to
+        // decide whether to even show the "Edit" button
+        // (project_detail_screen.dart's _ToolbarPermissions.resolve).
+        return StreamBuilder<DevelopmentTeamRole?>(
+          stream: repo.watchMyTeamRole(p.firestoreDocumentId, uid),
+          builder: (context, roleSnap) {
+            final effective = resolveEffectiveDevelopmentRole(
+              isAppAdmin: userRole.isAdmin,
+              currentUserId: uid,
+              project: p,
+              firestoreTeamDocRole: roleSnap.data,
+            );
+            final canManage = userRole.isAdmin ||
+                TeamAccessPermissions.canEditUnits(effective);
+            // Don't flash "no permission" while the team role / admin flag
+            // are still resolving.
+            if (!canManage &&
+                (roleSnap.connectionState == ConnectionState.waiting ||
+                    !userRole.adminRoleResolved)) {
+              return Scaffold(
+                appBar: AppBar(title: title),
+                body: const Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (!canManage) {
+              return Scaffold(
+                appBar: AppBar(title: title),
+                body: const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      "You don't have permission to edit this development.",
+                      textAlign: TextAlign.center,
                     ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ...DevelopmentEditorCatalog.developmentFeatureTypes.map(
-                    (e) {
-                      final on = _selectedFeatureKeys.contains(e.key);
-                      return FilterChip(
-                        label: Text(e.label),
-                        selected: on,
-                        onSelected: (v) {
-                          setState(() {
-                            if (v) {
-                              _selectedFeatureKeys.add(e.key);
-                            } else {
-                              _selectedFeatureKeys.remove(e.key);
-                            }
-                          });
-                        },
-                      );
-                    },
                   ),
-                  ...extraFeatures.map(
-                    (key) {
-                      final on = _selectedFeatureKeys.contains(key);
-                      return FilterChip(
-                        label: Text('$key (custom)'),
-                        selected: on,
-                        onSelected: (v) {
-                          setState(() {
-                            if (v) {
-                              _selectedFeatureKeys.add(key);
-                            } else {
-                              _selectedFeatureKeys.remove(key);
-                            }
-                          });
-                        },
-                      );
-                    },
+                ),
+              );
+            }
+
+            final catalogAmenitySet =
+                DevelopmentEditorCatalog.amenities.toSet();
+            final extraAmenities = p.amenities
+                .where((a) => !catalogAmenitySet.contains(a))
+                .toSet();
+
+            final catalogFeatureKeys = DevelopmentEditorCatalog
+                .developmentFeatureTypes
+                .map((e) => e.key)
+                .toSet();
+            final extraFeatures = p.developmentFeatureTypes
+                .where((k) => !catalogFeatureKeys.contains(k))
+                .toList();
+
+            return Scaffold(
+              appBar: AppBar(
+                title: title,
+                actions: [
+                  TextButton(
+                    onPressed: _saving ? null : () => _save(context),
+                    child: _saving
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Save'),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              InputDecorator(
-                decoration: const InputDecoration(
-                  labelText: 'Development status',
-                  border: OutlineInputBorder(),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: _statusRaw,
-                    items: [
-                      ...DevelopmentEditorCatalog.projectStatuses.map(
-                        (e) => DropdownMenuItem(
-                          value: e.raw,
-                          child: Text(e.label),
+              body: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                children: [
+                  _sectionTitle(context, 'Basic info'),
+                  TextField(
+                    controller: _projectName,
+                    decoration: const InputDecoration(
+                      labelText: 'Development name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _developerName,
+                    decoration: const InputDecoration(
+                      labelText: 'Developer / company name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _developerId,
+                    decoration: const InputDecoration(
+                      labelText: 'Developer ID',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _location,
+                    decoration: const InputDecoration(
+                      labelText: 'Location',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _totalUnits,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Total units (optional)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Development types',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ...DevelopmentEditorCatalog.developmentFeatureTypes.map(
+                        (e) {
+                          final on = _selectedFeatureKeys.contains(e.key);
+                          return FilterChip(
+                            label: Text(e.label),
+                            selected: on,
+                            onSelected: (v) {
+                              setState(() {
+                                if (v) {
+                                  _selectedFeatureKeys.add(e.key);
+                                } else {
+                                  _selectedFeatureKeys.remove(e.key);
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                      ...extraFeatures.map(
+                        (key) {
+                          final on = _selectedFeatureKeys.contains(key);
+                          return FilterChip(
+                            label: Text('$key (custom)'),
+                            selected: on,
+                            onSelected: (v) {
+                              setState(() {
+                                if (v) {
+                                  _selectedFeatureKeys.add(key);
+                                } else {
+                                  _selectedFeatureKeys.remove(key);
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Development status',
+                      border: OutlineInputBorder(),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: _statusRaw,
+                        items: [
+                          ...DevelopmentEditorCatalog.projectStatuses.map(
+                            (e) => DropdownMenuItem(
+                              value: e.raw,
+                              child: Text(e.label),
+                            ),
+                          ),
+                          if (!DevelopmentEditorCatalog.projectStatuses
+                              .any((e) => e.raw == _statusRaw))
+                            DropdownMenuItem(
+                              value: _statusRaw,
+                              child: Text(_statusRaw),
+                            ),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) setState(() => _statusRaw = v);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    title: const Text('Active listing'),
+                    value: _isActive,
+                    onChanged: (v) => setState(() => _isActive = v),
+                  ),
+                  SwitchListTile(
+                    title: const Text('Expiry date'),
+                    subtitle: _expiresEnabled && _expiresAt != null
+                        ? Text(
+                            MaterialLocalizations.of(context).formatFullDate(
+                              _expiresAt!,
+                            ),
+                          )
+                        : const Text('No expiry'),
+                    value: _expiresEnabled,
+                    onChanged: (v) {
+                      setState(() {
+                        _expiresEnabled = v;
+                        if (v && _expiresAt == null) {
+                          _expiresAt =
+                              DateTime.now().add(const Duration(days: 30));
+                        }
+                      });
+                    },
+                  ),
+                  if (_expiresEnabled)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: _pickExpiryDate,
+                        icon: const Icon(Icons.calendar_today, size: 18),
+                        label: const Text('Choose expiry date'),
+                      ),
+                    ),
+                  _sectionTitle(context, 'Description'),
+                  TextField(
+                    controller: _description,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      labelText: 'Overview',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _lifestyle,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Lifestyle features',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  _sectionTitle(context, 'Amenities'),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ...DevelopmentEditorCatalog.amenities.map((a) {
+                        final on = _selectedAmenities.contains(a);
+                        return FilterChip(
+                          label: Text(a),
+                          selected: on,
+                          onSelected: (v) {
+                            setState(() {
+                              if (v) {
+                                _selectedAmenities.add(a);
+                              } else {
+                                _selectedAmenities.remove(a);
+                              }
+                            });
+                          },
+                        );
+                      }),
+                      ...extraAmenities.map((a) {
+                        final on = _selectedAmenities.contains(a);
+                        return FilterChip(
+                          label: Text('$a (custom)'),
+                          selected: on,
+                          onSelected: (v) {
+                            setState(() {
+                              if (v) {
+                                _selectedAmenities.add(a);
+                              } else {
+                                _selectedAmenities.remove(a);
+                              }
+                            });
+                          },
+                        );
+                      }),
+                    ],
+                  ),
+                  _sectionTitle(context, 'Media URLs'),
+                  Text(
+                    'One URL per line (same as pasting into Firestore). Uploads from the iOS app still apply there.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _heroUrls,
+                    maxLines: 5,
+                    decoration: const InputDecoration(
+                      labelText: 'Hero images',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _sitePlanUrls,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Site plan images',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _floorPlanUrls,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Floor plan images',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  _sectionTitle(context, 'Unit types'),
+                  Text(
+                    'Edit catalog layouts (pricing, counts, optional gallery URLs).',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...List.generate(_unitForms.length, (index) {
+                    final f = _unitForms[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Unit type ${index + 1}',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.copy_outlined),
+                                  onPressed: () => _duplicateUnitType(index),
+                                  tooltip: 'Duplicate',
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  onPressed: () => _removeUnitType(index),
+                                  tooltip: 'Remove',
+                                ),
+                              ],
+                            ),
+                            TextField(
+                              controller: f.name,
+                              decoration: const InputDecoration(
+                                labelText: 'Label (e.g. 1BR City View)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: f.bedrooms,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Beds',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: f.bathrooms,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Baths',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  flex: 2,
+                                  child: TextField(
+                                    controller: f.price,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                    decoration: const InputDecoration(
+                                      labelText: 'Price',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: f.currency,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Currency',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: f.sqft,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Sq ft (optional)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: f.totalUnits,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Total units',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: f.availableUnits,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Available',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: f.interiorUrls,
+                              maxLines: 3,
+                              decoration: const InputDecoration(
+                                labelText: 'Interior image URLs (one per line)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: f.floorUrls,
+                              maxLines: 3,
+                              decoration: const InputDecoration(
+                                labelText: 'Floor plan URLs (one per line)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      if (!DevelopmentEditorCatalog.projectStatuses
-                          .any((e) => e.raw == _statusRaw))
-                        DropdownMenuItem(
-                          value: _statusRaw,
-                          child: Text(_statusRaw),
-                        ),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) setState(() => _statusRaw = v);
-                    },
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                title: const Text('Active listing'),
-                value: _isActive,
-                onChanged: (v) => setState(() => _isActive = v),
-              ),
-              SwitchListTile(
-                title: const Text('Expiry date'),
-                subtitle: _expiresEnabled && _expiresAt != null
-                    ? Text(
-                        MaterialLocalizations.of(context).formatFullDate(
-                          _expiresAt!,
-                        ),
-                      )
-                    : const Text('No expiry'),
-                value: _expiresEnabled,
-                onChanged: (v) {
-                  setState(() {
-                    _expiresEnabled = v;
-                    if (v && _expiresAt == null) {
-                      _expiresAt =
-                          DateTime.now().add(const Duration(days: 30));
-                    }
-                  });
-                },
-              ),
-              if (_expiresEnabled)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: _pickExpiryDate,
-                    icon: const Icon(Icons.calendar_today, size: 18),
-                    label: const Text('Choose expiry date'),
-                  ),
-                ),
-              _sectionTitle(context, 'Description'),
-              TextField(
-                controller: _description,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  labelText: 'Overview',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _lifestyle,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'Lifestyle features',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              _sectionTitle(context, 'Amenities'),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ...DevelopmentEditorCatalog.amenities.map((a) {
-                    final on = _selectedAmenities.contains(a);
-                    return FilterChip(
-                      label: Text(a),
-                      selected: on,
-                      onSelected: (v) {
-                        setState(() {
-                          if (v) {
-                            _selectedAmenities.add(a);
-                          } else {
-                            _selectedAmenities.remove(a);
-                          }
-                        });
-                      },
                     );
                   }),
-                  ...extraAmenities.map((a) {
-                    final on = _selectedAmenities.contains(a);
-                    return FilterChip(
-                      label: Text('$a (custom)'),
-                      selected: on,
-                      onSelected: (v) {
-                        setState(() {
-                          if (v) {
-                            _selectedAmenities.add(a);
-                          } else {
-                            _selectedAmenities.remove(a);
-                          }
-                        });
-                      },
-                    );
-                  }),
+                  OutlinedButton.icon(
+                    onPressed: _addUnitType,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add unit type'),
+                  ),
+                  _sectionTitle(context, 'Contact'),
+                  TextField(
+                    controller: _contactPerson,
+                    decoration: const InputDecoration(
+                      labelText: 'Contact name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _contactPhone,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Phone',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _contactEmail,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'Email',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
                 ],
               ),
-              _sectionTitle(context, 'Media URLs'),
-              Text(
-                'One URL per line (same as pasting into Firestore). Uploads from the iOS app still apply there.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _heroUrls,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  labelText: 'Hero images',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _sitePlanUrls,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'Site plan images',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _floorPlanUrls,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'Floor plan images',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              _sectionTitle(context, 'Unit types'),
-              Text(
-                'Edit catalog layouts (pricing, counts, optional gallery URLs).',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              ...List.generate(_unitForms.length, (index) {
-                final f = _unitForms[index];
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Unit type ${index + 1}',
-                                style: const TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.copy_outlined),
-                              onPressed: () => _duplicateUnitType(index),
-                              tooltip: 'Duplicate',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () => _removeUnitType(index),
-                              tooltip: 'Remove',
-                            ),
-                          ],
-                        ),
-                        TextField(
-                          controller: f.name,
-                          decoration: const InputDecoration(
-                            labelText: 'Label (e.g. 1BR City View)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: f.bedrooms,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'Beds',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextField(
-                                controller: f.bathrooms,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'Baths',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              flex: 2,
-                              child: TextField(
-                                controller: f.price,
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                  decimal: true,
-                                ),
-                                decoration: const InputDecoration(
-                                  labelText: 'Price',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextField(
-                                controller: f.currency,
-                                decoration: const InputDecoration(
-                                  labelText: 'Currency',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: f.sqft,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Sq ft (optional)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: f.totalUnits,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'Total units',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextField(
-                                controller: f.availableUnits,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'Available',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: f.interiorUrls,
-                          maxLines: 3,
-                          decoration: const InputDecoration(
-                            labelText: 'Interior image URLs (one per line)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: f.floorUrls,
-                          maxLines: 3,
-                          decoration: const InputDecoration(
-                            labelText: 'Floor plan URLs (one per line)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }),
-              OutlinedButton.icon(
-                onPressed: _addUnitType,
-                icon: const Icon(Icons.add),
-                label: const Text('Add unit type'),
-              ),
-              _sectionTitle(context, 'Contact'),
-              TextField(
-                controller: _contactPerson,
-                decoration: const InputDecoration(
-                  labelText: 'Contact name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _contactPhone,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: 'Phone',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _contactEmail,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Email',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+            );
+          },
+        );
+      },
     );
   }
 }

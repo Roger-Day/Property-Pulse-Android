@@ -1368,7 +1368,29 @@ class _UnauthenticatedProfileView extends StatelessWidget {
                         borderRadius: BorderRadius.circular(14),
                       ),
                     ),
-                    onPressed: () => context.go('/home'),
+                    onPressed: () async {
+                      // Only a truly signed-out user (not yet even a guest
+                      // session) needs this — the router's global redirect
+                      // sends any unauthenticated route back to /welcome, so
+                      // navigating without establishing a session first would
+                      // just bounce right back here.
+                      final auth = context.read<AuthProvider>();
+                      if (!auth.isSignedIn) {
+                        try {
+                          await auth.continueAsGuest();
+                        } catch (e) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Could not continue as guest: $e'),
+                            ),
+                          );
+                          return;
+                        }
+                      }
+                      if (!context.mounted) return;
+                      context.go('/home');
+                    },
                     child: const Text(
                       'Continue Browsing',
                       style: TextStyle(

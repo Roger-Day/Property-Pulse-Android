@@ -80,6 +80,7 @@ class ReviewModel {
     required this.comment,
     required this.date,
     this.helpfulCount = 0,
+    this.helpfulVoterIds = const [],
     this.isVerified = false,
     this.reviewType = ReviewType.general,
     this.categoryRatings = const {},
@@ -95,6 +96,9 @@ class ReviewModel {
   final String comment;
   final DateTime date;
   final int helpfulCount;
+
+  /// Users who already voted this review helpful (see markReviewHelpful).
+  final List<String> helpfulVoterIds;
   final bool isVerified;
   final ReviewType reviewType;
   final Map<ReviewCategory, int> categoryRatings;
@@ -154,6 +158,10 @@ class ReviewModel {
       comment: data['comment'] as String? ?? '',
       date: parseDate(data['date'] ?? data['createdAt']),
       helpfulCount: (data['helpfulCount'] as num?)?.toInt() ?? 0,
+      helpfulVoterIds: (data['helpfulVoterIds'] as List?)
+              ?.map((e) => '$e')
+              .toList() ??
+          const [],
       isVerified: data['isVerified'] as bool? ?? false,
       reviewType: parseType(data['reviewType']),
       categoryRatings: parseCategoryRatings(data['categoryRatings']),
@@ -169,6 +177,7 @@ class ReviewModel {
       catMap[entry.key.label] = entry.value;
     }
     return {
+      'id': id,
       'propertyId': propertyId,
       'userId': userId,
       'userName': userName,

@@ -140,6 +140,11 @@ class _FilterSheetState extends State<FilterSheet> {
 
   PropertyFilter get _result => PropertyFilter(
         query: widget.current.query,
+        // This sheet has no sort control of its own (that's the separate
+        // overflow "Sort" menu) — carry the active sort through untouched,
+        // same as `query` above, so applying a filter here doesn't silently
+        // revert the sort order back to default.
+        sortBy: widget.current.sortBy,
         minBedrooms: _bedrooms,
         minBathrooms: _bathrooms,
         minPrice: _minPrice,

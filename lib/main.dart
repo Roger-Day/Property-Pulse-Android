@@ -17,6 +17,7 @@ import 'providers/auth_provider.dart';
 import 'providers/feature_flags_provider.dart';
 import 'providers/theme_mode_provider.dart';
 import 'providers/onboarding_provider.dart';
+import 'providers/development_pending_invites_provider.dart';
 import 'providers/liked_provider.dart';
 import 'providers/saved_provider.dart';
 import 'providers/user_role_provider.dart';
@@ -270,6 +271,32 @@ Future<void> main() async {
                   repository: repo,
                   userId: authProv.user?.uid,
                 );
+          },
+        ),
+        // Development-team invite prompts — mirrors iOS
+        // DevelopmentPendingInvitesViewModel, reacting to auth (uid/email)
+        // changes the same way SavedProvider/LikedProvider do above.
+        ChangeNotifierProxyProvider2<AuthProvider, ProjectRepository,
+            DevelopmentPendingInvitesProvider>(
+          create: (ctx) => DevelopmentPendingInvitesProvider(
+            repository: ctx.read<ProjectRepository>(),
+          )..update(
+              userId: ctx.read<AuthProvider>().user?.uid,
+              email: ctx.read<AuthProvider>().user?.email,
+            ),
+          update: (ctx, authProv, repo, invites) {
+            if (invites != null) {
+              invites.update(
+                userId: authProv.user?.uid,
+                email: authProv.user?.email,
+              );
+              return invites;
+            }
+            return DevelopmentPendingInvitesProvider(repository: repo)
+              ..update(
+                userId: authProv.user?.uid,
+                email: authProv.user?.email,
+              );
           },
         ),
       ],

@@ -116,15 +116,17 @@ List<_Item> _buildItems(
     allRaw.add((senderId: d['senderId'] as String? ?? '', dt: dt, docId: doc.id, data: d, pending: null));
   }
 
-  // Remove pending messages that already appear in Firestore docs
-  // (de-dupe by approximate time + content)
-  final confirmedTexts = docs
-      .map((d) => '${d.data()['senderId']}|${d.data()['text']}')
+  // Remove pending messages that already appear in Firestore docs.
+  // Match by the client-generated id written onto the doc at send time —
+  // matching on sender+text alone treated a second, still-in-flight "ok"
+  // as a duplicate of an earlier already-confirmed "ok" and hid it.
+  final confirmedClientIds = docs
+      .map((d) => d.data()['clientId'])
+      .whereType<String>()
       .toSet();
 
   for (final p in pending) {
-    final key = '$currentUserId|${p.text}';
-    if (!confirmedTexts.contains(key)) {
+    if (!confirmedClientIds.contains(p.id)) {
       allRaw.add((senderId: currentUserId, dt: p.createdAt, docId: null, data: null, pending: p));
     }
   }
@@ -197,7 +199,8 @@ class ConversationScreen extends StatefulWidget {
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _ConversationScreenState extends State<ConversationScreen> {
+class _ConversationScreenState extends State<ConversationScreen>
+    with WidgetsBindingObserver {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
   final _imagePicker = ImagePicker();
@@ -209,6 +212,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
   StreamSubscription<bool>? _typingSub;
   Timer? _typingTimer;
   bool _iAmTyping = false;
+
+  // Which `lastMessageAt` we've already responded to with a mark-read write
+  // — without this, the badge only cleared on entry/back-button, so a
+  // message arriving while this screen was open kept the conversation
+  // showing as unread (badge lit) even though the user was looking right
+  // at it. Tracking this (rather than marking read on every conversation
+  // snapshot) also avoids a write-triggers-snapshot-triggers-write loop,
+  // since marking read touches `lastReadAtByUser`, not `lastMessageAt`.
+  DateTime? _lastMarkReadForMessageAt;
 
   CollectionReference<Map<String, dynamic>> get _messagesRef =>
       FirebaseFirestore.instance
@@ -226,13 +238,22 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _markThreadRead());
     _inputController.addListener(_onTextChanged);
     _startTypingListener();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Anything that arrived while backgrounded is unread until the user is
+    // actually looking at the thread again.
+    if (state == AppLifecycleState.resumed) _markThreadRead();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _clearTyping();
     _typingTimer?.cancel();
     _typingSub?.cancel();
@@ -244,6 +265,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
   // ── Thread helpers ──────────────────────────────────────────────────────────
 
   Future<void> _markThreadRead() async {
+    // Don't mark read while backgrounded (a message landing then would have
+    // its badge cleared unseen) or while another route covers this thread.
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
     try {
       await _convRef.update({
         // iOS-parity: lastReadAtByUser map is the sole source of truth for
@@ -353,6 +381,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         threadId: widget.threadId,
         senderId: widget.currentUserId,
         text: text,
+        clientId: pending.id,
       );
       if (mounted) setState(() => _pending.remove(pending));
       unawaited(AnalyticsService.logMessageSent(widget.threadId));
@@ -414,6 +443,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         threadId: widget.threadId,
         senderId: widget.currentUserId,
         imageUrl: url,
+        clientId: pending.id,
       );
 
       if (mounted) setState(() => _pending.remove(pending));
@@ -679,6 +709,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 DateTime? peerLastReadAt;
                 if (convSnap.hasData && convSnap.data!.exists) {
                   final data = convSnap.data!.data() ?? {};
+                  final lastMessageAt = data['lastMessageAt'];
+                  if (lastMessageAt is Timestamp) {
+                    final dt = lastMessageAt.toDate();
+                    if (_lastMarkReadForMessageAt == null ||
+                        dt.isAfter(_lastMarkReadForMessageAt!)) {
+                      _lastMarkReadForMessageAt = dt;
+                      WidgetsBinding.instance
+                          .addPostFrameCallback((_) => _markThreadRead());
+                    }
+                  }
                   final readMap = data['lastReadAtByUser'];
                   if (readMap is Map) {
                     // Find the peer's last read (any key that isn't currentUserId)

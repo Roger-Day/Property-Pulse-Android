@@ -161,9 +161,12 @@ class _ExploreScreenState extends State<ExploreScreen>
     }
     setState(() {
       _activeChipKey = isToggleOff ? null : key;
+      // Chips rebuild the filter from scratch; carry the chosen sort through
+      // so tapping a chip doesn't silently reset it.
+      final sort = _filter.sortBy;
       if (isToggleOff || key == null) {
         // Reset quick-chip-driven fields.
-        _filter = PropertyFilter(query: _filter.query);
+        _filter = PropertyFilter(query: _filter.query, sortBy: sort);
         return;
       }
       switch (key) {
@@ -192,6 +195,7 @@ class _ExploreScreenState extends State<ExploreScreen>
           _filter = PropertyFilter(
               query: _filter.query, minBathrooms: 2);
       }
+      _filter = _filter.copyWith(sortBy: sort);
     });
   }
 
@@ -301,7 +305,10 @@ class _ExploreScreenState extends State<ExploreScreen>
     );
     if (updated != null) {
       setState(() {
-        _filter = updated;
+        // The sheet's overflow "Sort" item changes `_filter.sortBy` on this
+        // screen while the sheet is still open, so `updated` carries the
+        // stale sort the sheet was opened with — keep the current one.
+        _filter = updated.copyWith(sortBy: _filter.sortBy);
         _activeChipKey = null; // Advanced filters override quick chips.
       });
     }

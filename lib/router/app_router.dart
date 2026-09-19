@@ -134,6 +134,19 @@ GoRouter createAppRouter(
         return '/required-role';
       }
 
+      // Safety net: an account that doesn't need the picker (already
+      // selected on this device or reconciled from the server, admin, or
+      // guest) must not stay parked on it — /required-role has no back
+      // button, and picking an option would overwrite the account's role.
+      if (loc == '/required-role' &&
+          onboardingProvider.ready &&
+          userRoleProvider.adminRoleResolved &&
+          (onboardingProvider.requiredRoleSelected ||
+              userRoleProvider.isAdmin ||
+              authProvider.isAnonymous)) {
+        return '/home';
+      }
+
       if (loc.startsWith('/admin')) {
         if (userRoleProvider.adminRoleResolved &&
             !userRoleProvider.isAdmin) {

@@ -37,17 +37,39 @@ import '../../widgets/full_screen_image_gallery.dart';
 import '../../widgets/messaging/contact_realtor_sheet.dart';
 import '../../widgets/property_card.dart';
 
-class PropertyDetailScreen extends StatelessWidget {
+class PropertyDetailScreen extends StatefulWidget {
   const PropertyDetailScreen({super.key, required this.propertyId});
 
   final String propertyId;
 
   @override
-  Widget build(BuildContext context) {
-    final repo = context.read<PropertyRepository>();
+  State<PropertyDetailScreen> createState() => _PropertyDetailScreenState();
+}
 
+class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
+  // Created once per property id — building it inside build() re-subscribed on
+  // every parent rebuild and flashed the loading spinner over the listing.
+  late Stream<PropertyModel?> _stream;
+
+  @override
+  void initState() {
+    super.initState();
+    _stream = context.read<PropertyRepository>().watchProperty(widget.propertyId);
+  }
+
+  @override
+  void didUpdateWidget(PropertyDetailScreen old) {
+    super.didUpdateWidget(old);
+    if (old.propertyId != widget.propertyId) {
+      _stream =
+          context.read<PropertyRepository>().watchProperty(widget.propertyId);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return StreamBuilder<PropertyModel?>(
-      stream: repo.watchProperty(propertyId),
+      stream: _stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return _DetailScaffold(
@@ -294,7 +316,7 @@ class _PropertyDetailBodyState extends State<_PropertyDetailBody> {
       if (context.canPop()) {
         context.pop();
       } else {
-        context.go('/');
+        context.go('/home');
       }
     } catch (e) {
       if (!context.mounted) return;
@@ -2001,7 +2023,7 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
   Future<void> _renew() async {
     setState(() => _busy = true);
     try {
-      await context.read<PropertyRepository>().renewListing(widget.property.id);
+      await context.read<PropertyRepository>().renewListing(widget.property);
       if (!mounted) return;
       setState(() => _status = 'available');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2145,6 +2167,43 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
                                       : AppColors.warning,
                                   fontWeight: FontWeight.w600,
                                 ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            // Verified Realtor Rewards — Rental Listing Expiration Bonus.
+            // Purely reflects what the server already computed and stored
+            // (verifiedRealtorExpirationBonusMonths) — shown whenever the
+            // bonus is currently applied, not just near expiration, so an
+            // owner can see why their expiration date is further out than
+            // the standard 30 days. Mirrors iOS `ExpirationRenewalView`.
+            if ((widget.property.verifiedRealtorExpirationBonusMonths ?? 0) > 0) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.verified, size: 18, color: Colors.green),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '✓ Verified Realtor Benefit — includes '
+                        '${widget.property.verifiedRealtorExpirationBonusMonths} extra '
+                        '${widget.property.verifiedRealtorExpirationBonusMonths == 1 ? 'month' : 'months'} '
+                        'before expiration.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.green.shade800,
+                            ),
                       ),
                     ),
                   ],
@@ -5016,19 +5075,33 @@ class _FloatingCircleButton extends StatelessWidget {
 
 // ─── Similar / Comparable Listings Section ────────────────────────────────────
 
-class _SimilarListingsSection extends StatelessWidget {
+class _SimilarListingsSection extends StatefulWidget {
   const _SimilarListingsSection({required this.property});
   final PropertyModel property;
 
   @override
+  State<_SimilarListingsSection> createState() =>
+      _SimilarListingsSectionState();
+}
+
+class _SimilarListingsSectionState extends State<_SimilarListingsSection> {
+  Stream<List<PropertyModel>>? _stream;
+  String? _streamKey;
+
+  @override
   Widget build(BuildContext context) {
-    final repo = context.read<PropertyRepository>();
+    final property = widget.property;
+    final key = '${property.id}|${property.city}|${property.propertyType}';
+    if (_stream == null || _streamKey != key) {
+      _streamKey = key;
+      _stream = context.read<PropertyRepository>().watchSimilarListings(
+            excludeId: property.id,
+            city: property.city,
+            propertyType: property.propertyType,
+          );
+    }
     return StreamBuilder<List<PropertyModel>>(
-      stream: repo.watchSimilarListings(
-        excludeId: property.id,
-        city: property.city,
-        propertyType: property.propertyType,
-      ),
+      stream: _stream,
       builder: (context, snap) {
         final similar = snap.data ?? [];
         if (similar.isEmpty) return const SizedBox.shrink();

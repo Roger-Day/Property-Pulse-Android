@@ -14,7 +14,10 @@ import '../../providers/user_role_provider.dart';
 import '../../repositories/project_repository.dart';
 import '../../services/analytics_service.dart';
 import '../../services/lead_credit_service.dart';
+import '../../models/development_team_role.dart';
+import '../../utils/effective_development_role.dart';
 import '../../utils/responsive.dart';
+import '../../utils/team_access_permissions.dart';
 import '../developer/lead_credit_topup_screen.dart';
 import '../projects/edit_development_screen.dart';
 import '../projects/sales_pipeline_screen.dart';
@@ -101,6 +104,14 @@ class _PortfolioWithInterestsState extends State<_PortfolioWithInterests> {
   final Map<String, List<ProjectInterestModel>> _byProject = {};
   final List<StreamSubscription<List<ProjectInterestModel>>> _subs = [];
 
+  // Lets the fullscreen Sales Pipeline route (pushed via Navigator, so it
+  // isn't rebuilt by this widget's own setState) stay live — without this,
+  // moving a lead's stage there updated Firestore but the board kept
+  // showing the card in its old column until the user backed out and
+  // reopened it.
+  final ValueNotifier<List<LeadWithProject>> _leadsNotifier =
+      ValueNotifier(const []);
+
   @override
   void initState() {
     super.initState();
@@ -138,6 +149,17 @@ class _PortfolioWithInterestsState extends State<_PortfolioWithInterests> {
         repo.watchProjectInterests(id).listen((list) {
           if (mounted) {
             setState(() => _byProject[id] = list);
+            _leadsNotifier.value = _allLeads;
+          }
+        },
+            // Viewer-role members can see the project but the `interests`
+            // read rule only allows Owner/Manager/Sales — treat that (or any
+            // other listener failure) as "no leads visible" instead of an
+            // unhandled stream error on every dashboard open.
+            onError: (_) {
+          if (mounted) {
+            setState(() => _byProject[id] = const []);
+            _leadsNotifier.value = _allLeads;
           }
         }),
       );
@@ -150,6 +172,7 @@ class _PortfolioWithInterestsState extends State<_PortfolioWithInterests> {
     for (final s in _subs) {
       s.cancel();
     }
+    _leadsNotifier.dispose();
     super.dispose();
   }
 
@@ -256,14 +279,17 @@ class _PortfolioWithInterestsState extends State<_PortfolioWithInterests> {
   }
 
   void _openPipelineFullscreen(BuildContext context) {
-    final leads = _allLeads;
+    _leadsNotifier.value = _allLeads;
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (ctx) => SalesPipelineScreen(
-          leads: leads,
-          onLeadStageChange: (lead, stage) async {
-            await _onStageChange(lead, stage);
-          },
+        builder: (ctx) => ValueListenableBuilder<List<LeadWithProject>>(
+          valueListenable: _leadsNotifier,
+          builder: (ctx, leads, _) => SalesPipelineScreen(
+            leads: leads,
+            onLeadStageChange: (lead, stage) async {
+              await _onStageChange(lead, stage);
+            },
+          ),
         ),
       ),
     );
@@ -809,7 +835,7 @@ class _HotLeadRow extends StatelessWidget {
   }
 }
 
-class _ProjectManagementCard extends StatelessWidget {
+class _ProjectManagementCard extends StatefulWidget {
   const _ProjectManagementCard({
     required this.project,
     required this.uid,
@@ -821,7 +847,31 @@ class _ProjectManagementCard extends StatelessWidget {
   final bool isAdmin;
 
   @override
+  State<_ProjectManagementCard> createState() => _ProjectManagementCardState();
+}
+
+class _ProjectManagementCardState extends State<_ProjectManagementCard> {
+  // Built once per (project, uid) — creating it inside build() re-subscribed
+  // on every dashboard rebuild and flashed the role back to "unknown".
+  Stream<DevelopmentTeamRole?>? _roleStream;
+  String? _roleStreamKey;
+
+  Stream<DevelopmentTeamRole?> _roleStreamFor(BuildContext context) {
+    final key = '${widget.project.firestoreDocumentId}|${widget.uid}';
+    if (_roleStream == null || _roleStreamKey != key) {
+      _roleStreamKey = key;
+      _roleStream = context
+          .read<ProjectRepository>()
+          .watchMyTeamRole(widget.project.firestoreDocumentId, widget.uid);
+    }
+    return _roleStream!;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final project = widget.project;
+    final uid = widget.uid;
+    final isAdmin = widget.isAdmin;
     final pid = project.firestoreDocumentId;
     final thumb = project.primaryImageUrl;
 
@@ -858,21 +908,35 @@ class _ProjectManagementCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: Wrap(
+            child: StreamBuilder<DevelopmentTeamRole?>(
+              stream: _roleStreamFor(context),
+              builder: (context, roleSnap) {
+                // Real Owner/Manager/Sales/Viewer tier from the team roster
+                // — the old `teamMembers.contains(uid)` check enabled Leads
+                // and Units for every tier, including read-only Viewers.
+                final role = resolveEffectiveDevelopmentRole(
+                  isAppAdmin: isAdmin,
+                  currentUserId: uid,
+                  project: project,
+                  firestoreTeamDocRole: roleSnap.data,
+                );
+                final canLeads = TeamAccessPermissions.canManageLeads(role);
+                final canUnits = TeamAccessPermissions.canManageUnits(role);
+                return Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
                 _MiniAction(
                   label: 'Leads',
                   icon: Icons.people_outline,
-                  onTap: _guessCanManageLeads(project, uid, isAdmin)
+                  onTap: canLeads
                       ? () => context.push('/development/$pid/leads', extra: project.projectName)
                       : null,
                 ),
                 _MiniAction(
                   label: 'Units',
                   icon: Icons.grid_view_outlined,
-                  onTap: _guessCanManageUnits(project, uid, isAdmin)
+                  onTap: canUnits
                       ? () => context.push('/development/$pid/inventory')
                       : null,
                 ),
@@ -887,24 +951,14 @@ class _ProjectManagementCard extends StatelessWidget {
                   onTap: () => context.push('/development/$pid/edit'),
                 ),
               ],
+                );
+              },
             ),
           ),
         ],
       ),
     );
   }
-}
-
-bool _guessCanManageLeads(ProjectModel p, String uid, bool isAdmin) {
-  if (isAdmin) return true;
-  if (p.developerId == uid || p.ownerId == uid) return true;
-  return p.teamMembers.contains(uid);
-}
-
-bool _guessCanManageUnits(ProjectModel p, String uid, bool isAdmin) {
-  if (isAdmin) return true;
-  if (p.developerId == uid || p.ownerId == uid) return true;
-  return p.teamMembers.contains(uid);
 }
 
 class _MiniAction extends StatelessWidget {

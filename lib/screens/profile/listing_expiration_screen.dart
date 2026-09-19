@@ -6,7 +6,6 @@ import 'package:provider/provider.dart';
 import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
 import '../../models/property_model.dart';
-import '../../providers/auth_provider.dart';
 import '../../repositories/property_repository.dart';
 
 /// Mirrors iOS `ListingExpirationView` — shows expiring/expired listings with renewal CTAs.
@@ -88,14 +87,15 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
 
   Future<void> _renew(PropertyModel property) async {
     try {
-      final newExpiry = DateTime.now().add(const Duration(days: 30));
-      await FirebaseFirestore.instance
-          .collection(AppConstants.propertiesCollection)
-          .doc(property.id)
-          .update({'expirationDate': Timestamp.fromDate(newExpiry)});
+      // Delegate to PropertyRepository.renewListing — it also resets `status`
+      // back to 'available' (this screen's own inline update used to only
+      // touch expirationDate, so `isExpired`/isDiscoverable — which check
+      // `status` first — kept treating the listing as expired even after
+      // "renewal") and grants the correct rent-vs-sale renewal duration.
+      await context.read<PropertyRepository>().renewListing(property);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Listing renewed for 30 days')),
+        const SnackBar(content: Text('Listing renewed')),
       );
       setState(() => _future = _load());
     } catch (e) {
