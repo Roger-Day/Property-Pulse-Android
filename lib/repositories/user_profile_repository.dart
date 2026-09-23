@@ -205,12 +205,33 @@ class UserProfileRepository {
     final existingSnap = await usersRef.get();
     final hasCreatedAt = existingSnap.data()?['createdAt'] != null;
     final hasRole = existingSnap.data()?['role'] != null;
+    final hasName =
+        ((existingSnap.data()?['fullName'] as String?)?.trim().isNotEmpty ??
+            false);
 
     // Only seed fields that are not yet present (merge: true keeps existing data).
     final userPayload = <String, dynamic>{
       'uid': uid,
       if (email.isNotEmpty) 'email': email,
-      if (displayName.isNotEmpty) 'fullName': displayName,
+      if (displayName.isNotEmpty)
+        'fullName': displayName
+      else if (!hasName)
+        // A placeholder, not a real choice — same reasoning as the `role`
+        // placeholder below. Google/Apple sign-in always populates
+        // `authUser.displayName`, but plain email/password registration
+        // (`AuthProvider.registerWithEmail`) never collects a name, so
+        // without this the very first profile write for that path omits
+        // BOTH `fullName` and `displayName` entirely. The deployed rule's
+        // `hasRequiredUserFields()` (firestore-enhanced.rules) requires one
+        // of those two keys to be present on the document — Firestore rules
+        // treat a `set(merge: true)` on a not-yet-existing doc as a create,
+        // so `request.resource.data` there is just this payload, and a
+        // missing key denies the entire write. That silently broke every
+        // brand-new email/password account's profile doc (and everything
+        // that depends on it: FCM token saves, invite lookups' `users`-doc
+        // fallback, etc.) with no error surfaced to the user. Overwritten
+        // the moment the user sets a real name via Edit Profile.
+        'fullName': 'New User',
       if (photoUrl.isNotEmpty) 'profileImageURL': photoUrl,
       if (!hasCreatedAt) 'createdAt': FieldValue.serverTimestamp(),
       // A placeholder, not a real choice — `requiredRoleSelected` (set only
