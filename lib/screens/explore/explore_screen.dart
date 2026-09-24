@@ -23,6 +23,7 @@ import '../../theme/pp_animations.dart';
 import '../../utils/responsive.dart';
 import '../../widgets/property_card.dart';
 import 'filter_sheet.dart';
+import 'search_history_screen.dart' show saveSearchHistory;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Explore Screen
@@ -58,6 +59,32 @@ class _ExploreScreenState extends State<ExploreScreen>
   /// repo's realtime-stream architecture (see
   /// `PropertyRepository.watchFilteredListings`'s `limitOverride` doc).
   int _resultsLimit = AppConstants.propertiesPageSize;
+
+  /// Result count from the most recent listings snapshot — captured (not
+  /// setState'd; it's a side-channel value, not something that should
+  /// itself trigger a rebuild) purely so a search submitted via the
+  /// keyboard's search action can log a `search_history` row with a
+  /// same-search-session result count instead of guessing.
+  int _lastResultCount = 0;
+
+  /// The most recently *submitted* (not just typed) query — saveSearchHistory
+  /// fires once per commit (search-action / Enter), not per keystroke, so
+  /// Recent Searches reflects intentional searches, matching what
+  /// search_history_screen.dart's own list is meant to show.
+  String? _lastSavedQuery;
+
+  void _onSearchSubmitted(String q) {
+    final query = q.trim();
+    if (query.isEmpty || query == _lastSavedQuery) return;
+    final uid = context.read<AuthProvider>().user?.uid;
+    if (uid == null || uid.isEmpty) return;
+    _lastSavedQuery = query;
+    unawaited(saveSearchHistory(
+      userId: uid,
+      query: query,
+      resultCount: _lastResultCount,
+    ));
+  }
 
   Stream<List<PropertyModel>> _getStream(PropertyRepository repo) {
     final filterChanged = _streamFilter != _filter;
@@ -359,6 +386,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                       return TextField(
                         controller: _searchController,
                         onChanged: _applyQuery,
+                        onSubmitted: _onSearchSubmitted,
                         textInputAction: TextInputAction.search,
                         decoration: InputDecoration(
                           hintText: listening ? 'Listening…' : 'Search city, state or title...',
@@ -554,6 +582,7 @@ class _ExploreScreenState extends State<ExploreScreen>
                   return const _ExploreLoadingSkeleton();
                 }
                 final list = snapshot.data!;
+                _lastResultCount = list.length;
                 if (list.isEmpty) {
                   return _EmptyState(
                       hasFilter: activeFilters > 0 || _activeChipKey != null);
