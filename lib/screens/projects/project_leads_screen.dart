@@ -24,7 +24,7 @@ import '../developer/lead_credit_topup_screen.dart';
 import 'sales_pipeline_screen.dart';
 
 /// Developer-facing lead list — iOS `ProjectLeadsView` parity.
-class ProjectLeadsScreen extends StatelessWidget {
+class ProjectLeadsScreen extends StatefulWidget {
   const ProjectLeadsScreen({
     super.key,
     required this.projectId,
@@ -33,6 +33,30 @@ class ProjectLeadsScreen extends StatelessWidget {
 
   final String projectId;
   final String projectName;
+
+  @override
+  State<ProjectLeadsScreen> createState() => _ProjectLeadsScreenState();
+}
+
+class _ProjectLeadsScreenState extends State<ProjectLeadsScreen> {
+  // Built once per (developmentId, uid) — creating it inline inside the
+  // outer StreamBuilder's builder re-subscribed the team-role listener on
+  // every watchProject emission, flashing roleSnap.data back to null and
+  // making canManage flicker to a lower-privilege state on any unrelated
+  // project-doc update. Mirrors developer_dashboard_screen.dart's
+  // _roleStreamFor / edit_development_screen.dart's _roleStreamFor.
+  Stream<DevelopmentTeamRole?>? _roleStream;
+  String? _roleStreamKey;
+
+  Stream<DevelopmentTeamRole?> _roleStreamFor(
+      ProjectRepository repo, String developmentId, String uid) {
+    final key = '$developmentId|$uid';
+    if (_roleStream == null || _roleStreamKey != key) {
+      _roleStreamKey = key;
+      _roleStream = repo.watchMyTeamRole(developmentId, uid);
+    }
+    return _roleStream!;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +73,7 @@ class ProjectLeadsScreen extends StatelessWidget {
     }
 
     return StreamBuilder<ProjectModel?>(
-      stream: repo.watchProject(projectId),
+      stream: repo.watchProject(widget.projectId),
       builder: (context, projectSnap) {
         final project = projectSnap.data;
         if (projectSnap.hasError) {
@@ -91,7 +115,7 @@ class ProjectLeadsScreen extends StatelessWidget {
         // to show the "Leads" button
         // (project_detail_screen.dart's _ToolbarPermissions.resolve).
         return StreamBuilder<DevelopmentTeamRole?>(
-          stream: repo.watchMyTeamRole(project.firestoreDocumentId, uid),
+          stream: _roleStreamFor(repo, project.firestoreDocumentId, uid),
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
@@ -131,13 +155,13 @@ class ProjectLeadsScreen extends StatelessWidget {
                 title: const Text('Leads'),
               ),
               body: StreamBuilder<List<DevelopmentUnitModel>>(
-                stream: repo.watchDevelopmentUnits(projectId),
+                stream: repo.watchDevelopmentUnits(widget.projectId),
                 builder: (context, unitSnap) {
                   final units = unitSnap.data ?? const <DevelopmentUnitModel>[];
                   final unitsById = {for (final u in units) u.id: u};
 
                   return StreamBuilder<List<ProjectInterestModel>>(
-                    stream: repo.watchProjectInterests(projectId),
+                    stream: repo.watchProjectInterests(widget.projectId),
                     builder: (context, snapshot) {
                       if (snapshot.hasError) {
                         return Center(
@@ -214,8 +238,8 @@ class ProjectLeadsScreen extends StatelessWidget {
                           .map(
                             (l) => LeadWithProject(
                               interest: l,
-                              projectName: projectName,
-                              projectId: projectId,
+                              projectName: widget.projectName,
+                              projectId: widget.projectId,
                             ),
                           )
                           .toList();
@@ -227,8 +251,8 @@ class ProjectLeadsScreen extends StatelessWidget {
                           showDragHandle: true,
                           builder: (ctx) => _LeadDetailSheet(
                             lead: lead,
-                            projectId: projectId,
-                            projectName: projectName,
+                            projectId: widget.projectId,
+                            projectName: widget.projectName,
                             units: units,
                           ),
                         );
@@ -261,7 +285,7 @@ class ProjectLeadsScreen extends StatelessWidget {
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 20),
                               child: Text(
-                                projectName,
+                                widget.projectName,
                                 style: Theme.of(context)
                                     .textTheme
                                     .titleMedium
@@ -352,8 +376,8 @@ class ProjectLeadsScreen extends StatelessWidget {
                                 ),
                                 child: _LeadTile(
                                   lead: l,
-                                  projectId: projectId,
-                                  projectName: projectName,
+                                  projectId: widget.projectId,
+                                  projectName: widget.projectName,
                                   unitsById: unitsById,
                                   onOpenDetail: () => openDetail(l),
                                 ),

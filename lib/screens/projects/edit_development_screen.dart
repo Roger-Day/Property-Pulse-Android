@@ -117,6 +117,25 @@ List<String> _linesToUrlList(String text) {
 }
 
 class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
+  // Built once per (developmentId, uid) — creating it inline inside the
+  // outer StreamBuilder's builder re-subscribed the team-role listener on
+  // every watchProject emission, flashing roleSnap.data back to null and
+  // making canManage flicker to a lower-privilege state on any unrelated
+  // project-doc update. Mirrors developer_dashboard_screen.dart's
+  // _roleStreamFor.
+  Stream<DevelopmentTeamRole?>? _roleStream;
+  String? _roleStreamKey;
+
+  Stream<DevelopmentTeamRole?> _roleStreamFor(
+      ProjectRepository repo, String developmentId, String uid) {
+    final key = '$developmentId|$uid';
+    if (_roleStream == null || _roleStreamKey != key) {
+      _roleStreamKey = key;
+      _roleStream = repo.watchMyTeamRole(developmentId, uid);
+    }
+    return _roleStream!;
+  }
+
   final _projectName = TextEditingController();
   final _developerName = TextEditingController();
   final _developerId = TextEditingController();
@@ -401,7 +420,7 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
         // decide whether to even show the "Edit" button
         // (project_detail_screen.dart's _ToolbarPermissions.resolve).
         return StreamBuilder<DevelopmentTeamRole?>(
-          stream: repo.watchMyTeamRole(p.firestoreDocumentId, uid),
+          stream: _roleStreamFor(repo, p.firestoreDocumentId, uid),
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
