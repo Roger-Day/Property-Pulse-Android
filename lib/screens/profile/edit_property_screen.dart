@@ -396,7 +396,12 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
                 .toList(),
           },
         'images': allUrls,
-        if (allUrls.isNotEmpty) 'thumbnailURL': allUrls.first,
+        // Explicitly clear when the last photo is removed — omitting the key
+        // left the old thumbnailURL untouched (this is a partial `.update()`
+        // merge), so a listing with zero photos kept showing its orphaned
+        // former thumbnail everywhere instead of falling back to a placeholder.
+        'thumbnailURL':
+            allUrls.isNotEmpty ? allUrls.first : FieldValue.delete(),
         'developmentId': _developmentIdCtrl.text.trim().isEmpty
             ? FieldValue.delete()
             : _developmentIdCtrl.text.trim(),
@@ -404,14 +409,30 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
 
       if (newPt == 'airbnb') {
         updates['expirationDate'] = FieldValue.delete();
-      } else if (typeComboChanged) {
-        final exp = ListingExpirationPolicy.expiresAt(
-          propertyTypeLower: newPt,
-          listingTypeLower: newLt,
-          createdAt: DateTime.now(),
-        );
-        if (exp != null) {
-          updates['expirationDate'] = Timestamp.fromDate(exp);
+      } else {
+        // `airbnbInfo` is only written while the type is airbnb — a listing
+        // switched away from airbnb kept the stale map, and any non-null
+        // airbnbInfo makes PropertyModel treat it as a short-stay that never
+        // expires.
+        if (_property?.airbnbInfo != null) {
+          updates['airbnbInfo'] = FieldValue.delete();
+        }
+        // Re-activating an already-expired listing by status alone left its
+        // old (past) expirationDate in place, so it stayed expired and the
+        // feed wrote 'expired' straight back. Grant a fresh window, as
+        // renewListing does.
+        final reactivating = (_property?.isExpired ?? false) &&
+            !const {'expired', 'archived', 'deleted'}
+                .contains(statuses[_statusIndex]);
+        if (typeComboChanged || reactivating) {
+          final exp = ListingExpirationPolicy.expiresAt(
+            propertyTypeLower: newPt,
+            listingTypeLower: newLt,
+            createdAt: DateTime.now(),
+          );
+          if (exp != null) {
+            updates['expirationDate'] = Timestamp.fromDate(exp);
+          }
         }
       }
 
@@ -729,7 +750,14 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
                       const SizedBox(height: 12),
                       PropertyTypeChips(
                         selectedIndex: _propertyTypeIndex,
-                        onChanged: (i) => setState(() {
+                        // ChoiceChip.onSelected fires on every tap, even the
+                        // already-selected chip — without this guard,
+                        // re-tapping "Commercial" while already Commercial
+                        // ran the clear below and wiped the listing's
+                        // feature tags with no UI here to re-add them.
+                        onChanged: (i) => i == _propertyTypeIndex
+                            ? null
+                            : setState(() {
                           _propertyTypeIndex = i;
                           if (_isCommercialLike) {
                             _bedrooms = 0;

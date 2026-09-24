@@ -244,6 +244,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                       setState(() => _obscureCurrent = !_obscureCurrent),
                   textInputAction: TextInputAction.next,
                   autofillHints: const [AutofillHints.password],
+                  allowWhitespace: true,
                 ),
                 const SizedBox(height: 20),
                 _passwordField(
@@ -348,6 +349,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
     TextInputAction textInputAction = TextInputAction.next,
     List<String>? autofillHints,
     void Function(String)? onFieldSubmitted,
+    bool allowWhitespace = false,
   }) {
     final theme = Theme.of(context);
     return Column(
@@ -368,9 +370,12 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
           textInputAction: textInputAction,
           autofillHints: autofillHints,
           keyboardType: TextInputType.visiblePassword,
-          inputFormatters: [
-            FilteringTextInputFormatter.deny(RegExp(r'\s')),
-          ],
+          // The CURRENT password must accept whitespace: sign-in does, so an
+          // existing password containing a space could otherwise never be
+          // entered here and re-authentication always failed.
+          inputFormatters: allowWhitespace
+              ? const []
+              : [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
           onSubmitted: onFieldSubmitted,
           decoration: InputDecoration(
             hintText: hint,

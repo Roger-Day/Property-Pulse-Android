@@ -24,6 +24,13 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
   bool _hasSearched = false;
   List<PropertyModel> _results = [];
   List<PropertyModel> _allListings = [];
+  // Property id -> its shortStayConfig.blockedDateRanges — mirrors iOS
+  // AirbnbSearchViewModel.isAvailable, which checks this in-memory field
+  // rather than querying a bookings collection.
+  final Map<String, List<_BlockedRange>> _blockedRangesById = {};
+  // Host uid -> `hostBlockedDates` day keys (yyyy-MM-dd) the host blocked from
+  // the Android host calendar — the property detail screen honors these too.
+  final Map<String, Set<String>> _hostBlockedDays = {};
 
   // Filters
   double? _maxPrice;
@@ -43,20 +50,129 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
 
   Future<void> _fetchAllListings() async {
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection(AppConstants.propertiesCollection)
-          .where('deleted', isEqualTo: false)
-          .where('listingType', isEqualTo: 'airbnb')
-          .limit(200)
-          .get();
+      // No server-side `deleted` filter (drops docs missing the field —
+      // isDiscoverable below already excludes deleted). Two queries because
+      // some legacy short-stays carry propertyType 'airbnb' but never got
+      // listingType 'airbnb'; merged by doc id.
+      final col = FirebaseFirestore.instance
+          .collection(AppConstants.propertiesCollection);
+      final snaps = await Future.wait([
+        col.where('listingType', isEqualTo: 'airbnb').limit(200).get(),
+        col.where('propertyType', isEqualTo: 'airbnb').limit(200).get(),
+        // iOS's AirbnbSearchViewModel also matches the short_stay convention.
+        col.where('listingType', isEqualTo: 'short_stay').limit(200).get(),
+        col.where('listing_type', isEqualTo: 'short_stay').limit(200).get(),
+      ]);
+      if (!mounted) return;
+      final docsById = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{
+        for (final snap in snaps)
+          for (final d in snap.docs) d.id: d,
+      };
+      final listings = <PropertyModel>[];
+      final blockedRanges = <String, List<_BlockedRange>>{};
+      for (final d in docsById.values) {
+        final p = PropertyModel.fromFirestore(d);
+        if (!p.isDiscoverable) continue;
+        listings.add(p);
+        blockedRanges[p.id] = _parseBlockedRanges(d.data());
+      }
+      final hostDays = await _fetchHostBlockedDays(listings);
       if (!mounted) return;
       setState(() {
-        _allListings = snap.docs
-            .map((d) => PropertyModel.fromFirestore(d))
-            .where((p) => !p.deleted)
-            .toList();
+        _allListings = listings;
+        _blockedRangesById
+          ..clear()
+          ..addAll(blockedRanges);
+        _hostBlockedDays
+          ..clear()
+          ..addAll(hostDays);
       });
     } catch (_) {}
+  }
+
+  /// Best-effort: a failure here just means host-calendar blocks aren't
+  /// applied, not that search breaks.
+  Future<Map<String, Set<String>>> _fetchHostBlockedDays(
+      List<PropertyModel> listings) async {
+    final out = <String, Set<String>>{};
+    try {
+      final hostIds = {
+        for (final p in listings)
+          if ((p.hostUserId ?? '').trim().isNotEmpty) p.hostUserId!.trim(),
+      }.toList();
+      final db = FirebaseFirestore.instance;
+      final snaps = await Future.wait([
+        for (var i = 0; i < hostIds.length; i += 30)
+          db
+              .collection('hostBlockedDates')
+              .where('hostId',
+                  whereIn: hostIds.sublist(
+                      i, i + 30 > hostIds.length ? hostIds.length : i + 30))
+              .get(),
+      ]);
+      for (final snap in snaps) {
+        for (final d in snap.docs) {
+          final host = d.data()['hostId'] as String?;
+          final date = d.data()['date'] as String?;
+          if (host != null && date != null) {
+            out.putIfAbsent(host, () => {}).add(date);
+          }
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  static String _dayKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  /// True if the host blocked any night in [checkIn, checkOut).
+  bool _isHostBlocked(PropertyModel p, DateTime checkIn, DateTime checkOut) {
+    final days = _hostBlockedDays[p.hostUserId?.trim() ?? ''];
+    if (days == null || days.isEmpty) return false;
+    var d = DateTime(checkIn.year, checkIn.month, checkIn.day);
+    final end = DateTime(checkOut.year, checkOut.month, checkOut.day);
+    for (; d.isBefore(end); d = DateTime(d.year, d.month, d.day + 1)) {
+      if (days.contains(_dayKey(d))) return true;
+    }
+    return false;
+  }
+
+  /// Reads `shortStayConfig.blockedDateRanges` off the raw doc — mirrors iOS
+  /// `ShortStayConfig`/`DateRange`. Not modeled on [PropertyModel] itself
+  /// since it's only needed here, for availability search.
+  static List<_BlockedRange> _parseBlockedRanges(Map<String, dynamic> data) {
+    final config = data['shortStayConfig'];
+    if (config is! Map) return const [];
+    final ranges = config['blockedDateRanges'];
+    if (ranges is! List) return const [];
+    final out = <_BlockedRange>[];
+    for (final r in ranges) {
+      if (r is! Map) continue;
+      final start = r['start'];
+      final end = r['end'];
+      if (start is Timestamp && end is Timestamp) {
+        out.add(_BlockedRange(start.toDate(), end.toDate()));
+      }
+    }
+    return out;
+  }
+
+  /// True if any blocked range for [propertyId] overlaps the half-open
+  /// [checkIn, checkOut) span, at day granularity — mirrors iOS
+  /// `DateRange.overlaps`.
+  bool _isBlocked(String propertyId, DateTime checkIn, DateTime checkOut) {
+    final ranges = _blockedRangesById[propertyId];
+    if (ranges == null || ranges.isEmpty) return false;
+    DateTime day(DateTime d) => DateTime(d.year, d.month, d.day);
+    final s2 = day(checkIn);
+    final e2 = day(checkOut);
+    for (final r in ranges) {
+      final s1 = day(r.start);
+      final e1 = day(r.end);
+      if (s1.isBefore(e2) && s2.isBefore(e1)) return true;
+    }
+    return false;
   }
 
   void _search() {
@@ -74,14 +190,31 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
             p.state.toLowerCase().contains(dest) ||
             p.title.toLowerCase().contains(dest);
         final matchBeds = p.bedrooms >= _minBeds;
-        final matchPrice = _maxPrice == null || p.price <= _maxPrice!;
+        // Nightly rate lives on airbnbInfo; `price` is the fallback for legacy docs.
+        final nightly = (p.airbnbInfo?.nightlyRate ?? 0) > 0
+            ? p.airbnbInfo!.nightlyRate
+            : p.price;
+        final matchPrice = _maxPrice == null || nightly <= _maxPrice!;
         return matchDest && matchBeds && matchPrice;
       }).toList();
 
       // Filter by guest capacity if specified
       if (_guests > 1) {
         filtered = filtered
-            .where((p) => p.bedrooms * 2 >= _guests)
+            .where(
+                (p) => (p.airbnbInfo?.maxGuests ?? p.bedrooms * 2) >= _guests)
+            .toList();
+      }
+
+      // Exclude listings blocked for the requested stay — the date pickers
+      // otherwise had no effect on results at all.
+      final checkIn = _checkIn;
+      final checkOut = _checkOut;
+      if (checkIn != null && checkOut != null && checkOut.isAfter(checkIn)) {
+        filtered = filtered
+            .where((p) =>
+                !_isBlocked(p.id, checkIn, checkOut) &&
+                !_isHostBlocked(p, checkIn, checkOut))
             .toList();
       }
 
@@ -185,8 +318,7 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
                     ),
                     filled: true,
                     fillColor: AppColors.surfaceVariant,
-                    contentPadding:
-                        const EdgeInsets.symmetric(vertical: 12),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   onChanged: (_) => setState(() {}),
                   onSubmitted: (_) => _search(),
@@ -229,8 +361,8 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
                     ),
                     child: const Text(
                       'Search',
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 15),
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                     ),
                   ),
                 ),
@@ -257,8 +389,8 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
                                 const SizedBox(height: 12),
                             itemBuilder: (ctx, i) => PropertyCard(
                               property: _results[i],
-                              onTap: () => context
-                                  .push('/property/${_results[i].id}'),
+                              onTap: () =>
+                                  context.push('/property/${_results[i].id}'),
                             ),
                           ),
           ),
@@ -294,8 +426,8 @@ class _DateChip extends StatelessWidget {
                 style: const TextStyle(
                     fontSize: 10, color: AppColors.textSecondary)),
             Text(value,
-                style: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           ],
         ),
       ),
@@ -323,15 +455,14 @@ class _GuestStepper extends StatelessWidget {
             onTap: value > 1 ? () => onChanged(value - 1) : null,
             child: Icon(Icons.remove,
                 size: 16,
-                color: value > 1
-                    ? AppColors.textPrimary
-                    : AppColors.textTertiary),
+                color:
+                    value > 1 ? AppColors.textPrimary : AppColors.textTertiary),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6),
             child: Text('$value',
-                style: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           ),
           GestureDetector(
             onTap: () => onChanged(value + 1),
@@ -369,8 +500,7 @@ class _DiscoverView extends StatelessWidget {
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Text('Popular Stays',
-              style: TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 16)),
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         ),
         Expanded(
           child: ListView.separated(
@@ -379,8 +509,7 @@ class _DiscoverView extends StatelessWidget {
             separatorBuilder: (_, __) => const SizedBox(height: 12),
             itemBuilder: (ctx, i) {
               final p = listings[i];
-              return PropertyCard(
-                  property: p, onTap: () => onTap(p));
+              return PropertyCard(property: p, onTap: () => onTap(p));
             },
           ),
         ),
@@ -408,8 +537,7 @@ class _EmptyResults extends StatelessWidget {
                   ? 'No stays found in "$destination"'
                   : 'No stays match your search',
               textAlign: TextAlign.center,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
             const Text(
@@ -434,8 +562,7 @@ class _AirbnbFiltersSheet extends StatefulWidget {
   final void Function(double? maxPrice, int minBeds) onApply;
 
   @override
-  State<_AirbnbFiltersSheet> createState() =>
-      _AirbnbFiltersSheetState();
+  State<_AirbnbFiltersSheet> createState() => _AirbnbFiltersSheetState();
 }
 
 class _AirbnbFiltersSheetState extends State<_AirbnbFiltersSheet> {
@@ -461,8 +588,7 @@ class _AirbnbFiltersSheetState extends State<_AirbnbFiltersSheet> {
           Row(
             children: [
               const Text('Filters',
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 18)),
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               const Spacer(),
               TextButton(
                 onPressed: () {
@@ -484,17 +610,14 @@ class _AirbnbFiltersSheetState extends State<_AirbnbFiltersSheet> {
             min: 50,
             max: 1000,
             divisions: 19,
-            label: _maxPrice != null
-                ? '\$${_maxPrice!.round()}'
-                : 'Any',
+            label: _maxPrice != null ? '\$${_maxPrice!.round()}' : 'Any',
             onChanged: (v) => setState(() => _maxPrice = v),
           ),
           Text(
             _maxPrice != null
                 ? 'Up to \$${_maxPrice!.round()} / night'
                 : 'Any price',
-            style:
-                const TextStyle(color: AppColors.textSecondary),
+            style: const TextStyle(color: AppColors.textSecondary),
           ),
           const SizedBox(height: 16),
           const Text('Minimum Bedrooms',
@@ -508,10 +631,8 @@ class _AirbnbFiltersSheetState extends State<_AirbnbFiltersSheet> {
                 child: ChoiceChip(
                   label: Text(b == 0 ? 'Any' : '$b+'),
                   selected: selected,
-                  onSelected: (_) =>
-                      setState(() => _minBeds = b),
-                  selectedColor:
-                      AppColors.primary.withOpacity(0.15),
+                  onSelected: (_) => setState(() => _minBeds = b),
+                  selectedColor: AppColors.primary.withOpacity(0.15),
                   checkmarkColor: AppColors.primary,
                 ),
               );
@@ -529,4 +650,12 @@ class _AirbnbFiltersSheetState extends State<_AirbnbFiltersSheet> {
       ),
     );
   }
+}
+
+/// One entry of a property's `shortStayConfig.blockedDateRanges` — mirrors
+/// iOS `DateRange` (id is not needed for the overlap check, so it's dropped).
+class _BlockedRange {
+  const _BlockedRange(this.start, this.end);
+  final DateTime start;
+  final DateTime end;
 }

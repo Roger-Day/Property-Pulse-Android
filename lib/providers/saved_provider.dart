@@ -69,6 +69,10 @@ class SavedProvider extends ChangeNotifier {
     final uid = _userId;
     if (uid == null || uid.isEmpty) return;
     if (property.isListerUser(uid)) return;
+    // repo.toggleSaved flips based on the server's current state, so two
+    // overlapping taps on the same property both saw "not saved" and both
+    // saved it while the UI had shown save-then-unsave.
+    if (!_inFlight.add(property.id)) return;
 
     // Optimistic update
     final wasSaved = _savedIds.contains(property.id);
@@ -94,8 +98,12 @@ class SavedProvider extends ChangeNotifier {
         _savedIds = {..._savedIds}..remove(property.id);
       }
       notifyListeners();
+    } finally {
+      _inFlight.remove(property.id);
     }
   }
+
+  final Set<String> _inFlight = {};
 
   /// Remove a saved property by ID only — used when the property doc is deleted
   /// and we only have the ID, not a full [PropertyModel].

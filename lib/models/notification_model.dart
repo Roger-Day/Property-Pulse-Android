@@ -41,20 +41,22 @@ class NotificationModel {
       createdAt: parseDate(data['createdAt'] ?? data['timestamp']),
       type: data['type'] as String?,
       referenceId:
-          _referenceIdFromPayload(data),
+          _referenceIdFromPayload(data, data['type'] as String?),
     );
   }
 
   /// iOS `InAppNotification` stores IDs under `data` ([String: String]); some
   /// writers also set top-level `referenceId`.
-  static String? _referenceIdFromPayload(Map<String, dynamic> data) {
-    final top = data['referenceId'];
-    if (top != null) {
-      final s = '$top'.trim();
-      if (s.isNotEmpty) return s;
-    }
+  static String? _referenceIdFromPayload(Map<String, dynamic> data, String? type) {
     final raw = data['data'];
-    if (raw is! Map) return null;
+    final top = data['referenceId'];
+    String? topLevel() {
+      if (top == null) return null;
+      final s = '$top'.trim();
+      return s.isEmpty ? null : s;
+    }
+
+    if (raw is! Map) return topLevel();
     String? pick(String key) {
       final v = raw[key];
       if (v == null) return null;
@@ -62,8 +64,24 @@ class NotificationModel {
       return s.isEmpty ? null : s;
     }
 
-    return pick('referenceId') ??
+    // Message notifications carry the conversation under `conversationId`
+    // (see MessagingService._notifyRecipient / PushNotificationService's own
+    // `data['conversationId'] ?? data['threadId']` fallback) — check that
+    // FIRST, and specifically for this type, so a message notification that
+    // also happens to carry an unrelated `propertyId` (e.g. the conversation
+    // is about a listing) doesn't get resolved to that property instead of
+    // the conversation thread it's actually about.
+    if (type == 'message') {
+      final conversation = pick('conversationId') ?? pick('threadId');
+      if (conversation != null) return conversation;
+    }
+
+    // A top-level referenceId still wins for every non-message type (and for
+    // messages that carry no conversation id), as before.
+    return topLevel() ??
+        pick('referenceId') ??
         pick('propertyId') ??
+        pick('conversationId') ??
         pick('threadId') ??
         pick('appointmentId') ??
         pick('projectId');

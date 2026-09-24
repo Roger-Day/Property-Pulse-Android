@@ -6,6 +6,7 @@ import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
 import '../../theme/pp_animations.dart';
 import '../../providers/onboarding_provider.dart';
+import '../../providers/auth_provider.dart';
 
 /// Android equivalent of iOS `EnhancedWelcomeView`.
 ///
@@ -23,6 +24,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   late final AnimationController _iconCtrl;
   late final Animation<double> _iconScale;
   late final AnimationController _floatCtrl;
+  bool _guestBusy = false;
 
   @override
   void initState() {
@@ -68,9 +70,25 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   }
 
   Future<void> _onGuest() async {
-    await context.read<OnboardingProvider>().skipOnboarding();
-    if (!mounted) return;
-    context.go('/home');
+    if (_guestBusy) return;
+    setState(() => _guestBusy = true);
+    try {
+      // Must actually establish an anonymous session — the router's global
+      // redirect sends any unauthenticated request back to /welcome, so
+      // skipping onboarding alone leaves the user bounced right back here.
+      await context.read<AuthProvider>().continueAsGuest();
+      if (!mounted) return;
+      await context.read<OnboardingProvider>().skipOnboarding();
+      if (!mounted) return;
+      context.go('/home');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not continue as guest: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _guestBusy = false);
+    }
   }
 
   // ── Build ───────────────────────────────────────────────────────────────────
@@ -205,7 +223,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
                   // Guest
                   TextButton(
-                    onPressed: _onGuest,
+                    onPressed: _guestBusy ? null : _onGuest,
                     style: TextButton.styleFrom(
                       foregroundColor: Colors.white.withValues(alpha: 0.75),
                       padding: const EdgeInsets.symmetric(vertical: 10),

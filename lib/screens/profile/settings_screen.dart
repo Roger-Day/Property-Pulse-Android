@@ -60,7 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 iconColor: Colors.orange,
                 title: 'Notification Preferences',
                 subtitle: 'Customize your notification settings',
-                onTap: () => context.push('/profile/notifications-settings'),
+                onTap: () => context.push('/profile/notifications'),
               ),
               if (flags.subscriptionsEnabled)
                 _SettingsItem(
@@ -151,7 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 iconColor: Colors.teal,
                 title: 'Region',
                 subtitle: 'Select your region and currency',
-                onTap: () => context.push('/profile/region-picker'),
+                onTap: () => context.push('/profile/region'),
               ),
               _SettingsItem(
                 icon: Icons.speed_outlined,

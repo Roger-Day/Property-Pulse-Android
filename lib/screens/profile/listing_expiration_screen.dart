@@ -6,7 +6,6 @@ import 'package:provider/provider.dart';
 import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
 import '../../models/property_model.dart';
-import '../../providers/auth_provider.dart';
 import '../../repositories/property_repository.dart';
 
 /// Mirrors iOS `ListingExpirationView` — shows expiring/expired listings with renewal CTAs.
@@ -37,10 +36,15 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
     // Mirror iOS ListingExpirationViewModel: run parallel queries for
     // ownerId, realtorId, and hostUserId so all listing roles are covered.
     // Firestore doesn't support OR, so we run three queries and deduplicate.
+    //
+    // No server-side `deleted` filter — `isEqualTo: false` silently drops
+    // any doc missing the field entirely (legacy listings predating it),
+    // which would hide them from this screen and make them unrenewable.
+    // Filtered out client-side below instead.
     final results = await Future.wait([
-      col.where('ownerId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
-      col.where('realtorId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
-      col.where('hostUserId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
+      col.where('ownerId', isEqualTo: uid).get(),
+      col.where('realtorId', isEqualTo: uid).get(),
+      col.where('hostUserId', isEqualTo: uid).get(),
     ]);
 
     // Deduplicate by doc id
@@ -48,6 +52,7 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
     final allDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
     for (final snap in results) {
       for (final doc in snap.docs) {
+        if (doc.data()['deleted'] == true) continue;
         if (seen.add(doc.id)) allDocs.add(doc);
       }
     }
@@ -88,14 +93,15 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
 
   Future<void> _renew(PropertyModel property) async {
     try {
-      final newExpiry = DateTime.now().add(const Duration(days: 30));
-      await FirebaseFirestore.instance
-          .collection(AppConstants.propertiesCollection)
-          .doc(property.id)
-          .update({'expirationDate': Timestamp.fromDate(newExpiry)});
+      // Delegate to PropertyRepository.renewListing — it also resets `status`
+      // back to 'available' (this screen's own inline update used to only
+      // touch expirationDate, so `isExpired`/isDiscoverable — which check
+      // `status` first — kept treating the listing as expired even after
+      // "renewal") and grants the correct rent-vs-sale renewal duration.
+      await context.read<PropertyRepository>().renewListing(property);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Listing renewed for 30 days')),
+        const SnackBar(content: Text('Listing renewed')),
       );
       setState(() => _future = _load());
     } catch (e) {

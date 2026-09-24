@@ -205,12 +205,33 @@ class UserProfileRepository {
     final existingSnap = await usersRef.get();
     final hasCreatedAt = existingSnap.data()?['createdAt'] != null;
     final hasRole = existingSnap.data()?['role'] != null;
+    final hasName =
+        ((existingSnap.data()?['fullName'] as String?)?.trim().isNotEmpty ??
+            false);
 
     // Only seed fields that are not yet present (merge: true keeps existing data).
     final userPayload = <String, dynamic>{
       'uid': uid,
       if (email.isNotEmpty) 'email': email,
-      if (displayName.isNotEmpty) 'fullName': displayName,
+      if (displayName.isNotEmpty)
+        'fullName': displayName
+      else if (!hasName)
+        // A placeholder, not a real choice — same reasoning as the `role`
+        // placeholder below. Google/Apple sign-in always populates
+        // `authUser.displayName`, but plain email/password registration
+        // (`AuthProvider.registerWithEmail`) never collects a name, so
+        // without this the very first profile write for that path omits
+        // BOTH `fullName` and `displayName` entirely. The deployed rule's
+        // `hasRequiredUserFields()` (firestore-enhanced.rules) requires one
+        // of those two keys to be present on the document — Firestore rules
+        // treat a `set(merge: true)` on a not-yet-existing doc as a create,
+        // so `request.resource.data` there is just this payload, and a
+        // missing key denies the entire write. That silently broke every
+        // brand-new email/password account's profile doc (and everything
+        // that depends on it: FCM token saves, invite lookups' `users`-doc
+        // fallback, etc.) with no error surfaced to the user. Overwritten
+        // the moment the user sets a real name via Edit Profile.
+        'fullName': 'New User',
       if (photoUrl.isNotEmpty) 'profileImageURL': photoUrl,
       if (!hasCreatedAt) 'createdAt': FieldValue.serverTimestamp(),
       // A placeholder, not a real choice — `requiredRoleSelected` (set only
@@ -480,14 +501,18 @@ class UserProfileRepository {
 
     Future<void> collect(String ownerField) async {
       try {
+        // No server-side `deleted` filter — `isEqualTo: false` silently
+        // drops any doc missing the field, which would undercount a legacy
+        // active listing (and this count gates the listing-quota/role-switch
+        // blocking checks that rely on it).
         final snap = await _db
             .collection(AppConstants.propertiesCollection)
             .where(ownerField, isEqualTo: userId)
-            .where('deleted', isEqualTo: false)
             .where('status', whereIn: activeStatuses.toList())
             .get();
         for (final doc in snap.docs) {
           final data = doc.data();
+          if (data['deleted'] == true) continue;
           final propertyType =
               (data['propertyType'] as String? ?? '').toLowerCase().trim();
           final listingType = ((data['listingType'] as String?) ??
@@ -713,10 +738,12 @@ class UserProfileRepository {
         for (final field in fields)
           _db
               .collection(AppConstants.propertiesCollection)
-              .where('deleted', isEqualTo: false)
               .where(field, isEqualTo: userId)
               .get(),
       ]);
+      // Deleted docs are dropped client-side below — a server-side
+      // `deleted == false` silently excluded legacy listings with no
+      // `deleted` field from the owner's own My Listings.
       final byId = <String, PropertyModel>{};
       for (final snap in snaps) {
         for (final doc in snap.docs) {
@@ -1182,10 +1209,23 @@ class UserProfileRepository {
         .handleError((_) => <ReviewModel>[]);
   }
 
+  /// Throws a [StateError] if [review.userId] already has a review on
+  /// [review.propertyId] — without this, nothing (client or server) stopped
+  /// a user submitting unlimited reviews for the same listing, each one
+  /// skewing its public average rating in [_updatePropertyRatingStats].
   Future<void> addReview(ReviewModel review) async {
-    await _db
+    final existing = await _db
         .collection(AppConstants.reviewsCollection)
-        .add(review.toFirestore());
+        .where('propertyId', isEqualTo: review.propertyId)
+        .where('userId', isEqualTo: review.userId)
+        .limit(1)
+        .get();
+    if (existing.docs.isNotEmpty) {
+      throw StateError('You already reviewed this property.');
+    }
+    // Store the real doc id in the `id` field (the security rules require it).
+    final ref = _db.collection(AppConstants.reviewsCollection).doc();
+    await ref.set({...review.toFirestore(), 'id': ref.id});
     await _updatePropertyRatingStats(review.propertyId);
   }
 
@@ -1511,11 +1551,24 @@ class UserProfileRepository {
   // ── Reviews — Helpful vote ────────────────────────────────────────────────
 
   /// Atomically increments the helpfulCount on a review.
-  Future<void> markReviewHelpful(String reviewId) async {
-    await _db
-        .collection(AppConstants.reviewsCollection)
-        .doc(reviewId)
-        .update({'helpfulCount': FieldValue.increment(1)});
+  /// Records [userId]'s "Helpful" vote on a review, idempotently — a bare
+  /// `increment(1)` had no per-user voter record, so the only guard against
+  /// a repeat vote was local widget state that reset on every rebuild (e.g.
+  /// navigating away and back), letting the same user inflate the count
+  /// indefinitely. Returns true if this call recorded a new vote, false if
+  /// [userId] had already voted (no-op).
+  Future<bool> markReviewHelpful(String reviewId, String userId) async {
+    final ref = _db.collection(AppConstants.reviewsCollection).doc(reviewId);
+    return _db.runTransaction<bool>((txn) async {
+      final snap = await txn.get(ref);
+      final voters = (snap.data()?['helpfulVoterIds'] as List?) ?? const [];
+      if (voters.contains(userId)) return false;
+      txn.update(ref, {
+        'helpfulCount': FieldValue.increment(1),
+        'helpfulVoterIds': FieldValue.arrayUnion([userId]),
+      });
+      return true;
+    });
   }
 }
 

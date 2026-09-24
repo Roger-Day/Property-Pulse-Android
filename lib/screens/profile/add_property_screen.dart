@@ -487,18 +487,36 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
   }
 
   Future<void> _save() async {
+    // Re-entrancy guard: flips `_canSave` false BEFORE any awaited work,
+    // including the validation-error alerts below — a rapid double-tap
+    // while one of those alerts is still awaiting dismissal previously
+    // passed this guard unchanged (it wasn't set until after all
+    // validation), letting the second tap re-run the same validation and
+    // stack a second AlertDialog. Every early return past this point must
+    // restore `_canSave` to true (matching the existing seeker/limit-dialog
+    // and write-path resets below), since Dart only runs synchronously up
+    // to the first `await`, so the second call is queued behind whichever
+    // await this one is in, not interleaved with it.
+    if (!_canSave) return;
+    setState(() => _canSave = false);
+
     FocusScope.of(context).unfocus();
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      setState(() => _canSave = true);
+      return;
+    }
 
     final title = _titleCtrl.text.trim();
     final priceText = _priceCtrl.text.trim();
     if (title.isEmpty) {
       await _showErrorAlert('Please enter a property title.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
     final priceVal = double.tryParse(priceText);
     if (priceText.isEmpty || priceVal == null || priceVal <= 0) {
       await _showErrorAlert('Please enter a valid price.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
     if (_streetCtrl.text.trim().isEmpty ||
@@ -506,6 +524,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
         _stateCtrl.text.trim().isEmpty ||
         _zipCtrl.text.trim().isEmpty) {
       await _showErrorAlert('Please fill in all address fields.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
 
@@ -521,6 +540,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
     } catch (_) {}
 
     if (!isAdmin && ent != null && ent.userType == ListingUserType.seeker) {
+      setState(() => _canSave = true);
       await _showSeekerSwitchDialog();
       return;
     }
@@ -531,6 +551,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
             await profileRepo.countActiveListingsForOwner(widget.userId);
         final allowed = ent.allowedActiveListingLimit(DateTime.now());
         if (active >= allowed) {
+          setState(() => _canSave = true);
           await _showListingLimitDialog();
           return;
         }
@@ -547,7 +568,6 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
         FirebaseFirestore.instance.collection(AppConstants.propertiesCollection).doc().id;
 
     setState(() {
-      _canSave = false;
       _blockingMessage = _pickedImages.isNotEmpty
           ? 'Uploading photos…'
           : 'Saving listing…';
@@ -722,7 +742,10 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
                     _AddListingsQuotaBanner(userId: widget.userId),
                     const SizedBox(height: 12),
                     _StripeHostBanner(userId: widget.userId),
-                    _CrossRoleListingBanner(userId: widget.userId),
+                    _CrossRoleListingBanner(
+                      userId: widget.userId,
+                      listingType: listingTypes[_listingTypeIndex],
+                    ),
                     const SizedBox(height: 12),
                     _AddFormSectionCard(
                       title: 'Basic Information',
@@ -1667,8 +1690,12 @@ class _IosNumberRow extends StatelessWidget {
 }
 
 class _CrossRoleListingBanner extends StatelessWidget {
-  const _CrossRoleListingBanner({required this.userId});
+  const _CrossRoleListingBanner({required this.userId, required this.listingType});
   final String userId;
+  /// Currently-selected listing type ('sale' | 'rent' | 'lease') — needed to
+  /// gate the Verified Realtor rental-expiration-bonus banner below, which
+  /// (unlike the other two banners here) only applies to rental listings.
+  final String listingType;
 
   @override
   Widget build(BuildContext context) {
@@ -1678,25 +1705,44 @@ class _CrossRoleListingBanner extends StatelessWidget {
           .doc(userId)
           .snapshots(),
       builder: (context, snap) {
-        final role = (snap.data?.data()?['role'] as String? ?? '')
+        final data = snap.data?.data();
+        final role = (data?['role'] as String? ?? '')
             .toLowerCase()
             .replaceAll(' ', '')
             .replaceAll('_', '');
+        final verificationStatus =
+            (data?['verificationStatus'] as String? ?? '').toLowerCase();
+        final isRental = listingType == 'rent' || listingType == 'lease';
 
+        String? title;
         String? message;
         Color color = Colors.blue;
+        IconData icon = Icons.info_outline;
 
-        if (role == 'airbnbhost') {
+        // Verified Realtor Rewards — Rental Listing Expiration Bonus. Purely
+        // informational: the actual +2 months is computed and applied
+        // server-side (functions/verified-realtor-rental-expiration-functions.js)
+        // regardless of whether this banner renders. Never shown to
+        // non-realtors, unverified realtors, or non-rental listings.
+        if (role == 'realtor' && verificationStatus == 'verified' && isRental) {
+          title = '✓ Verified Realtor Benefit';
+          message =
+              'Your verified status gives this rental listing an additional 2 months before expiration.';
+          color = Colors.green;
+          icon = Icons.verified;
+        } else if (role == 'airbnbhost') {
+          title = 'General listing on your Host account';
           message =
               'General listing on your Host account. Uses your 1 free general-listing slot (separate from short-stay listings). This listing will expire: For Rent/Lease in 30 days, For Sale in 365 days — renew from My Listings before it expires.';
           color = Colors.blue;
         } else if (role == 'developer') {
+          title = 'General listing on your Developer account';
           message =
               'General listing on your Developer account. Uses your 1 free general-listing slot (separate from development projects). This listing will expire: For Rent/Lease in 30 days, For Sale in 365 days — renew from My Listings before it expires.';
           color = Colors.indigo;
         }
 
-        if (message == null) return const SizedBox.shrink();
+        if (message == null || title == null) return const SizedBox.shrink();
 
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
@@ -1710,16 +1756,14 @@ class _CrossRoleListingBanner extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.info_outline, color: color, size: 18),
+                Icon(icon, color: color, size: 18),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        role == 'airbnbhost'
-                            ? 'General listing on your Host account'
-                            : 'General listing on your Developer account',
+                        title,
                         style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,

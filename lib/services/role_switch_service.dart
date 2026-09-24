@@ -58,21 +58,34 @@ class RoleSwitchService {
   }
 
   /// Check if user has active listings that block switching.
+  ///
+  /// No server-side `deleted` filter — `isEqualTo: false` silently drops any
+  /// doc missing the field (older/imported records), which would let a
+  /// realtor with a legacy active listing switch roles even though this
+  /// check exists specifically to block that.
   static Future<int> countActiveListings(String userId) async {
     final db = FirebaseFirestore.instance;
     final ownerSnap = await db
         .collection('properties')
         .where('ownerId', isEqualTo: userId)
-        .where('deleted', isEqualTo: false)
         .get();
     final realtorSnap = await db
         .collection('properties')
         .where('realtorId', isEqualTo: userId)
-        .where('deleted', isEqualTo: false)
         .get();
+    // Only live listings block a switch — sold/rented/expired ones don't.
+    const activeStatuses = {'available', 'pending', 'active'};
+    bool blocks(Map<String, dynamic> data) =>
+        data['deleted'] != true &&
+        activeStatuses
+            .contains((data['status'] as String? ?? 'available').toLowerCase());
     final ids = <String>{};
-    for (final d in ownerSnap.docs) ids.add(d.id);
-    for (final d in realtorSnap.docs) ids.add(d.id);
+    for (final d in ownerSnap.docs) {
+      if (blocks(d.data())) ids.add(d.id);
+    }
+    for (final d in realtorSnap.docs) {
+      if (blocks(d.data())) ids.add(d.id);
+    }
     return ids.length;
   }
 

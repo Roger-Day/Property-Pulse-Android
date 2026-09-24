@@ -42,17 +42,19 @@ class _RequiredRoleScreenState extends State<RequiredRoleScreen> {
       // profile settings if it didn't land.
     }
     if (!mounted) return;
-    await context.read<OnboardingProvider>().markRequiredRoleSelected();
-    if (!mounted) return;
 
     if (role == 'airbnbHost') {
       // Mirrors iOS's dedicated 5-step host setup — reachable right after
       // choosing this role, since nothing else in the app currently opens
-      // it. The router redirect will send them to /home once this pops.
+      // it. Shown BEFORE the local flag is set: once the flag is true the
+      // router leaves /required-role immediately, which would dispose this
+      // screen and skip the host onboarding.
       await Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => const AirbnbHostOnboardingScreen(),
       ));
+      if (!mounted) return;
     }
+    await context.read<OnboardingProvider>().markRequiredRoleSelected();
     if (!mounted) return;
     setState(() => _saving = false);
     if (context.mounted) context.go('/home');

@@ -365,13 +365,19 @@ class AdminRepository {
   // ── properties (moderation / takedown) ────────────────────────────────────
 
   Stream<List<Map<String, dynamic>>> watchRecentListings() {
+    // No server-side `deleted` filter — `isEqualTo: false` silently drops
+    // any doc missing the field (older/imported records), hiding real
+    // listings from moderation. Filtered client-side below instead.
     return _db
         .collection(AppConstants.propertiesCollection)
-        .where('deleted', isEqualTo: false)
-        .limit(60)
+        // Widened from 60: soft-deleted docs are filtered out below and would
+        // otherwise consume slots, leaving the moderation list short.
+        .limit(200)
         .snapshots()
         .map((snap) {
-      final list = snap.docs.map((d) {
+      final list = snap.docs
+          .where((d) => d.data()['deleted'] != true)
+          .map((d) {
         final m = d.data();
         return <String, dynamic>{
           'id': d.id,
@@ -382,7 +388,7 @@ class AdminRepository {
         };
       }).toList();
       list.sort((a, b) => b['id'].toString().compareTo(a['id'].toString()));
-      return list;
+      return list.take(60).toList();
     });
   }
 

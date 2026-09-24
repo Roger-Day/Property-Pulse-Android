@@ -49,10 +49,42 @@ class _MapScreenState extends State<MapScreen> {
   bool _showSearchHereButton = false;
   LatLngBounds? _visibleBounds;
 
+  // Set by "Search this area": narrows the loaded listings to those inside
+  // the bounds the user had on screen. Cleared by "Show all" or a filter change.
+  LatLngBounds? _areaBounds;
+
+  static bool _inBounds(LatLngBounds b, PropertyModel p) {
+    final lat = p.latitude;
+    final lng = p.longitude;
+    if (lat == null || lng == null) return false;
+    if (lat < b.southwest.latitude || lat > b.northeast.latitude) return false;
+    final w = b.southwest.longitude;
+    final e = b.northeast.longitude;
+    // A region crossing the antimeridian has west > east.
+    return w <= e ? (lng >= w && lng <= e) : (lng >= w || lng <= e);
+  }
+
+  // Stable stream reference — created once (and only recreated when _filter
+  // actually changes) so StreamBuilder never sees a different stream object
+  // on every setState. Built inline in build() before, this reconnected on
+  // every camera-idle event (each pan/zoom triggers a _visibleBounds
+  // setState), flashing the "Loading Properties…" overlay and re-querying
+  // Firestore on every gesture.
+  late Stream<List<PropertyModel>> _listingsStream;
+
   @override
   void initState() {
     super.initState();
+    _listingsStream = _watchListings();
     _moveToUserLocation();
+  }
+
+  Stream<List<PropertyModel>> _watchListings() {
+    final repo = context.read<PropertyRepository>();
+    return _filter.isEmpty
+        ? repo.watchMapListings()
+        // Match watchMapListings' 50-pin window instead of the 20-item page.
+        : repo.watchFilteredListings(_filter, limitOverride: 50);
   }
 
   @override
@@ -205,8 +237,6 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final repo = context.read<PropertyRepository>();
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -220,9 +250,7 @@ class _MapScreenState extends State<MapScreen> {
         ],
       ),
       body: StreamBuilder<List<PropertyModel>>(
-        stream: _filter.isEmpty
-            ? repo.watchMapListings()
-            : repo.watchFilteredListings(_filter),
+        stream: _listingsStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return _MapOverlayCard(
@@ -230,13 +258,17 @@ class _MapScreenState extends State<MapScreen> {
               title: 'Error Loading Map',
               message: snapshot.error.toString(),
               child: TextButton(
-                onPressed: () => setState(() {}),
+                onPressed: () => setState(() => _listingsStream = _watchListings()),
                 child: const Text('Retry'),
               ),
             );
           }
 
-          final list = snapshot.data ?? const <PropertyModel>[];
+          final all = snapshot.data ?? const <PropertyModel>[];
+          final area = _areaBounds;
+          final list = area == null
+              ? all
+              : all.where((p) => _inBounds(area, p)).toList();
           final isLoading =
               snapshot.connectionState == ConnectionState.waiting;
 
@@ -285,8 +317,9 @@ class _MapScreenState extends State<MapScreen> {
                       onTap: () {
                         setState(() {
                           _showSearchHereButton = false;
-                          // Apply bounds as city filter approximation
-                          // (full bounds-based query requires Firestore GeoPoint)
+                          _areaBounds = _visibleBounds;
+                          _selected = null;
+                          _markerCache.clear();
                         });
                       },
                       child: Container(
@@ -320,6 +353,24 @@ class _MapScreenState extends State<MapScreen> {
                           ],
                         ),
                       ),
+                    ),
+                  ),
+                ),
+
+              if (_areaBounds != null && !_showSearchHereButton)
+                Positioned(
+                  top: 12,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: ActionChip(
+                      avatar: const Icon(Icons.close, size: 16),
+                      label: const Text('Show all'),
+                      onPressed: () => setState(() {
+                        _areaBounds = null;
+                        _selected = null;
+                        _markerCache.clear();
+                      }),
                     ),
                   ),
                 ),
@@ -378,6 +429,8 @@ class _MapScreenState extends State<MapScreen> {
     if (updated != null) {
       setState(() {
         _filter = updated;
+        _listingsStream = _watchListings();
+        _areaBounds = null;
         _selected = null; // dismiss any open sheet when filters change
         _markerCache.clear(); // force marker rebuild
       });

@@ -17,6 +17,7 @@ import 'providers/auth_provider.dart';
 import 'providers/feature_flags_provider.dart';
 import 'providers/theme_mode_provider.dart';
 import 'providers/onboarding_provider.dart';
+import 'providers/development_pending_invites_provider.dart';
 import 'providers/liked_provider.dart';
 import 'providers/saved_provider.dart';
 import 'providers/user_role_provider.dart';
@@ -81,6 +82,11 @@ Future<void> main() async {
   // ── Crashlytics ────────────────────────────────────────────────────────────
   // Mirrors iOS: CrashlyticsService initialises crash reporting + Flutter error routing.
   await CrashlyticsService.shared.init();
+
+  // Ordered after Crashlytics init so the diagnostic's non-fatal report and
+  // custom key actually reach the console — on a Play Store build that is the
+  // only signal you get that App Check is broken.
+  unawaited(_reportAppCheckStatus());
 
   // ── Firebase Performance ───────────────────────────────────────────────────
   // ios: PerformanceMonitoringService.shared.setupPerformanceMonitoring()
@@ -267,8 +273,99 @@ Future<void> main() async {
                 );
           },
         ),
+        // Development-team invite prompts — mirrors iOS
+        // DevelopmentPendingInvitesViewModel, reacting to auth (uid/email)
+        // changes the same way SavedProvider/LikedProvider do above.
+        ChangeNotifierProxyProvider2<AuthProvider, ProjectRepository,
+            DevelopmentPendingInvitesProvider>(
+          create: (ctx) => DevelopmentPendingInvitesProvider(
+            repository: ctx.read<ProjectRepository>(),
+          )..update(
+              userId: ctx.read<AuthProvider>().user?.uid,
+              email: ctx.read<AuthProvider>().user?.email,
+            ),
+          update: (ctx, authProv, repo, invites) {
+            if (invites != null) {
+              invites.update(
+                userId: authProv.user?.uid,
+                email: authProv.user?.email,
+              );
+              return invites;
+            }
+            return DevelopmentPendingInvitesProvider(repository: repo)
+              ..update(
+                userId: authProv.user?.uid,
+                email: authProv.user?.email,
+              );
+          },
+        ),
       ],
       child: PropertyPulseApp(router: router),
     ),
   );
+}
+
+/// Startup diagnostic: did App Check actually mint a token on this device?
+///
+/// Exists because an App Check failure is otherwise invisible. The SDK does
+/// not throw at [FirebaseAppCheck.activate] time — it silently omits the
+/// X-Firebase-AppCheck header, and the only symptom is that the AI callables
+/// (the only Cloud Functions running with `enforceAppCheck: true`) start
+/// returning `unauthenticated`. From the UI that is indistinguishable from a
+/// signed-out user, so it reads as an AI bug rather than an attestation one.
+///
+/// On a Play Store or internal-testing build there is no console to read, so
+/// the result goes to Crashlytics: the `app_check` custom key rides along on
+/// every subsequent report, and a failure is recorded as a non-fatal under
+/// Crashlytics → Issues.
+///
+/// Runs unawaited — Play Integrity's first attestation involves a round trip
+/// to Google Play services and must not block first frame.
+///
+/// Never logs the token itself: an App Check token is a bearer credential.
+/// Only its presence and length are reported.
+Future<void> _reportAppCheckStatus() async {
+  const provider = kDebugMode ? 'debug' : 'playIntegrity';
+  try {
+    final token = await FirebaseAppCheck.instance
+        .getToken()
+        .timeout(const Duration(seconds: 30));
+
+    if (token == null || token.isEmpty) {
+      // Reached the backend but got nothing back — the app is almost
+      // certainly not registered for this provider in the Firebase console.
+      const msg = 'App Check: no token issued (provider: $provider). '
+          'AI features will fail with "unauthenticated" until the app is '
+          'registered for App Check in the Firebase console.';
+      CrashlyticsService.shared.logMessage(msg);
+      await CrashlyticsService.shared
+          .setUserProperty('missing', forKey: 'app_check');
+      await CrashlyticsService.shared.logError(
+        StateError(msg),
+        StackTrace.current,
+        context: 'app_check:no_token',
+      );
+      debugPrint('⚠️ $msg');
+      return;
+    }
+
+    await CrashlyticsService.shared.setUserProperty('ok', forKey: 'app_check');
+    CrashlyticsService.shared
+        .logMessage('App Check: token acquired (provider: $provider).');
+    debugPrint('✅ App Check: token acquired via $provider '
+        '(${token.length} chars). AI callables should authenticate.');
+  } catch (e, st) {
+    // Attestation itself failed — on Android this is typically a missing or
+    // mismatched SHA-256 signing certificate in the Firebase console, or a
+    // device without Play services.
+    await CrashlyticsService.shared
+        .setUserProperty('error', forKey: 'app_check');
+    await CrashlyticsService.shared.logError(
+      e,
+      st,
+      context: 'app_check:token_failed:$provider',
+    );
+    debugPrint('⚠️ App Check: token request failed via $provider — $e. '
+        'AI features will fail with "unauthenticated".');
+  }
 }

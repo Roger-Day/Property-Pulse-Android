@@ -214,6 +214,7 @@ class _AirbnbListingWizardScreenState
 
   Future<List<String>> _uploadPhotos(String propertyId) async {
     final urls = <String>[];
+    var failed = 0;
     setState(() {
       _totalImages = _photos.length;
       _uploadedCount = 0;
@@ -228,8 +229,16 @@ class _AirbnbListingWizardScreenState
         await ref.putFile(File(photo.path));
         final url = await ref.getDownloadURL();
         urls.add(url);
-      } catch (_) {}
+      } catch (_) {
+        failed++;
+      }
       if (mounted) setState(() => _uploadedCount++);
+    }
+    // Abort before the listing doc exists (it's created after this returns)
+    // rather than silently publishing with zero or partial photos.
+    if (failed > 0) {
+      throw StateError(
+          '$failed of ${_photos.length} photos failed to upload. Check your connection and try again.');
     }
     return urls;
   }
@@ -255,6 +264,7 @@ class _AirbnbListingWizardScreenState
         'serviceFee': 14.0,
         'securityDeposit': _securityDeposit,
         'minStay': _minNights,
+        'maxStay': _hasMaxNights ? _maxNights : null,
         'instantBookable': _instantBook,
         'cancellationPolicy': _cancellationPolicy,
         'checkInTime': _checkInTime,
@@ -310,7 +320,10 @@ class _AirbnbListingWizardScreenState
         'trust_score': 100.0,
       });
 
-      // Update user's airbnbHostInfo
+      // Update user's airbnbHostInfo. Best-effort: the listing above is
+      // already written, so a failure here must not read as "publish failed"
+      // — retrying regenerated the id and created a duplicate listing.
+      try {
       final userRef = FirebaseFirestore.instance
           .collection(AppConstants.usersCollection)
           .doc(uid);
@@ -334,6 +347,7 @@ class _AirbnbListingWizardScreenState
           }
         }, SetOptions(merge: true));
       }
+      } catch (_) {}
 
       if (!mounted) return;
       setState(() {

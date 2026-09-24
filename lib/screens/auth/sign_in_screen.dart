@@ -29,50 +29,12 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _busy = false;
   String? _error;
 
-  late final AuthProvider _auth;
-
-  @override
-  void initState() {
-    super.initState();
-    _auth = context.read<AuthProvider>();
-    _auth.addListener(_onAuthChanged);
-  }
-
   @override
   void dispose() {
-    _auth.removeListener(_onAuthChanged);
     _email.dispose();
     _password.dispose();
     _passwordFocus.dispose();
     super.dispose();
-  }
-
-  /// Mirrors iOS's post-sign-in `isDeleted`/`isBanned`/`isSuspended` gate —
-  /// "Account Deleted" gets its own dedicated alert (matching iOS's exact
-  /// title/message); banned/suspended reuse the same generic inline error
-  /// text iOS shows for both (`AuthError.userDisabled`).
-  void _onAuthChanged() {
-    final reason = _auth.blockedReason;
-    if (reason == null || !mounted) return;
-    if (reason == AccountBlockedReason.deleted) {
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Account Deleted'),
-          content: const Text(
-              'This account has been permanently deleted. If this is a mistake, please contact support.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      ).then((_) => _auth.clearBlockedReason());
-    } else {
-      setState(() => _error = 'This account has been disabled.');
-      _auth.clearBlockedReason();
-    }
   }
 
   Future<void> _run(Future<void> Function() fn) async {

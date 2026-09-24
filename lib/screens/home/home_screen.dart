@@ -66,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen>
   late final Stream<List<PropertyModel>> _homePropertyPoolStream;
   late final Stream<List<PropertyModel>> _mostViewedStream;
   late final Stream<List<ProjectModel>> _homeProjectsStream;
+  late final Stream<List<PropertyModel>> _airbnbStream;
   Stream<List<PropertyModel>> _nearbyStream = const Stream.empty();
 
   @override
@@ -84,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen>
       _homePropertyPoolStream = repo.watchHomePropertyPool();
       _mostViewedStream = repo.watchMostViewedListings();
       _homeProjectsStream = projects.watchHomeProjects();
+      _airbnbStream = repo.watchAirbnbListings();
       _streamsInitialised = true;
     }
   }
@@ -340,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen>
                 // ── Airbnb Short Stays (iOS AirbnbStaysSection) ─────────
                 SliverToBoxAdapter(
                   child: StreamBuilder<List<PropertyModel>>(
-                    stream: context.read<PropertyRepository>().watchAirbnbListings(),
+                    stream: _airbnbStream,
                     builder: (context, airbnbSnap) {
                       final airbnbProps = airbnbSnap.data ?? [];
                       if (airbnbProps.isEmpty) return const SizedBox.shrink();
@@ -531,14 +533,25 @@ class _HeroHeaderState extends State<_HeroHeader>
   }
 
   /// Firestore aggregate count — fast, doesn't download documents (iOS parity).
+  ///
+  /// No `.where('deleted', isEqualTo: false)` on the count itself —
+  /// `isEqualTo: false` silently excludes any doc missing the `deleted`
+  /// field (legacy listings), undercounting real inventory. Instead take
+  /// the total count and subtract only docs explicitly `deleted: true`,
+  /// which correctly includes legacy docs with no `deleted` field at all —
+  /// still two lightweight aggregates, no documents downloaded.
   Future<void> _fetchCount() async {
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection('properties')
-          .where('deleted', isEqualTo: false)
-          .count()
-          .get();
-      if (mounted) setState(() => _totalProperties = snap.count?.toInt());
+      final col = FirebaseFirestore.instance.collection('properties');
+      final results = await Future.wait([
+        col.count().get(),
+        col.where('deleted', isEqualTo: true).count().get(),
+      ]);
+      final total = results[0].count?.toInt();
+      final deleted = results[1].count?.toInt();
+      if (mounted && total != null) {
+        setState(() => _totalProperties = total - (deleted ?? 0));
+      }
     } catch (_) {
       // Fall back to in-memory count — no action needed (same as iOS)
     }

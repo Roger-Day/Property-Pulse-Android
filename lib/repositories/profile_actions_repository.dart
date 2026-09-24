@@ -47,8 +47,21 @@ class ProfileActionsRepository {
     });
   }
 
-  /// Fetch or create a referral code (simplified vs iOS transaction — good enough for share sheet).
-  Future<String> getOrCreateReferralCode(String userId) async {
+  final Map<String, Future<String>> _referralCodeInFlight = {};
+
+  /// Fetch or create a referral code. Concurrent callers (double-tap, two
+  /// screens) share one allocation, and each attempt is a transaction so two
+  /// devices can't both claim the same code or leave an orphaned
+  /// `referrals/{code}` doc behind.
+  Future<String> getOrCreateReferralCode(String userId) {
+    return _referralCodeInFlight.putIfAbsent(
+      userId,
+      () => _allocateReferralCode(userId)
+          .whenComplete(() => _referralCodeInFlight.remove(userId)),
+    );
+  }
+
+  Future<String> _allocateReferralCode(String userId) async {
     final userRef = _db.collection(_userReferralCodes).doc(userId);
     final snap = await userRef.get();
     final existing = snap.data()?['code'] as String?;
@@ -62,18 +75,26 @@ class ProfileActionsRepository {
           .join()
           .toLowerCase();
       final refDoc = _db.collection(_referrals).doc(code);
-      final taken = await refDoc.get();
-      if (taken.exists) continue;
-      await refDoc.set({
-        'referrerId': userId,
-        'createdAt': FieldValue.serverTimestamp(),
+      final result = await _db.runTransaction<String?>((tx) async {
+        final userSnap = await tx.get(userRef);
+        final already = userSnap.data()?['code'] as String?;
+        if (already != null && already.isNotEmpty) return already;
+        if ((await tx.get(refDoc)).exists) return null; // collision — retry
+        tx.set(refDoc, {
+          'referrerId': userId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        tx.set(
+            userRef,
+            {
+              'code': code,
+              'userId': userId,
+              'updatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true));
+        return code;
       });
-      await userRef.set({
-        'code': code,
-        'userId': userId,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      return code;
+      if (result != null) return result;
     }
     throw StateError('Could not allocate referral code');
   }

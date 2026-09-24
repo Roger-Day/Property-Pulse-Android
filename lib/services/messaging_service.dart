@@ -48,12 +48,17 @@ class MessagingService {
       if (clientId != null) 'clientId': clientId,
     });
 
-    await _updateConvLastMessage(
-      db: db,
-      threadId: threadId,
-      senderId: senderId,
-      preview: text,
-    );
+    // The message doc above is already written and visible; a failure
+    // updating the conversation preview must not surface as "not
+    // delivered" — the Retry that follows resent the text as a duplicate.
+    try {
+      await _updateConvLastMessage(
+        db: db,
+        threadId: threadId,
+        senderId: senderId,
+        preview: text,
+      );
+    } catch (_) {}
   }
 
   // ── Send image message ──────────────────────────────────────────────────────
@@ -90,6 +95,7 @@ class MessagingService {
     required String senderId,
     required String imageUrl,
     String caption = '',
+    String? clientId,
   }) async {
     await _messagesRef(db, threadId).add({
       'senderId': senderId,
@@ -101,14 +107,18 @@ class MessagingService {
       'attachmentType': 'image',
       'type': 'image',
       'createdAt': FieldValue.serverTimestamp(),
+      if (clientId != null) 'clientId': clientId,
     });
 
-    await _updateConvLastMessage(
-      db: db,
-      threadId: threadId,
-      senderId: senderId,
-      preview: caption.isNotEmpty ? caption : '📷 Photo',
-    );
+    // Same as sendTextMessage: the message is already written.
+    try {
+      await _updateConvLastMessage(
+        db: db,
+        threadId: threadId,
+        senderId: senderId,
+        preview: caption.isNotEmpty ? caption : '📷 Photo',
+      );
+    } catch (_) {}
   }
 
   // ── Delete message ──────────────────────────────────────────────────────────
@@ -205,6 +215,10 @@ class MessagingService {
       // (MessageViewModel.swift:474,629) so they don't see their own send
       // as unread — see [isConversationUnread].
       'lastReadAtByUser.$senderId': FieldValue.serverTimestamp(),
+      // A new message brings back a thread the recipient had "deleted"
+      // (deletedFor is a per-user hide flag, nothing else ever cleared it,
+      // so they silently missed every later message in that conversation).
+      if (otherId.isNotEmpty) 'deletedFor.$otherId': FieldValue.delete(),
     };
     await _convRef(db, threadId).update(patch);
 

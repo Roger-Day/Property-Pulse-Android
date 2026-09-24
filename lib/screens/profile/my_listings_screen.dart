@@ -124,7 +124,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
 
   Future<void> _renew(PropertyModel p) async {
     try {
-      await context.read<PropertyRepository>().renewListing(p.id);
+      await context.read<PropertyRepository>().renewListing(p);
       if (!mounted) return;
       HapticFeedback.lightImpact();
       ScaffoldMessenger.of(context).showSnackBar(

@@ -39,8 +39,20 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   }
 
   Future<void> _load() async {
-    final data =
-        await context.read<UserProfileRepository>().getPrivacySettings(widget.userId);
+    Map<String, dynamic> data;
+    try {
+      data = await context
+          .read<UserProfileRepository>()
+          .getPrivacySettings(widget.userId);
+    } catch (_) {
+      // Fall back to the defaults below instead of spinning forever.
+      data = const <String, dynamic>{};
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not load your saved settings.')),
+        );
+      }
+    }
     if (!mounted) return;
     setState(() {
       _showProfileToPublic = data['showProfile'] as bool? ??
@@ -90,6 +102,12 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
       );
       if (!mounted) return;
       Navigator.of(context).maybePop();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save privacy settings: $e')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }

@@ -30,6 +30,26 @@ class _SavedScreenState extends State<SavedScreen>
   // subscription, giving a real pull-to-refresh on a live Firestore stream.
   int _refreshKey = 0;
 
+  // The listings stream is cached per (user, refresh key). It used to be
+  // created inside the Consumer<SavedProvider> builder, so every saved-set
+  // notification re-subscribed and re-read every saved listing, and a
+  // swiped-away Dismissible lingered until the new query returned.
+  Stream<List<PropertyModel>>? _savedStream;
+  String? _savedStreamUser;
+  int _savedStreamKey = -1;
+
+  Stream<List<PropertyModel>> _streamFor(
+      PropertyRepository repo, String userId) {
+    if (_savedStream == null ||
+        _savedStreamUser != userId ||
+        _savedStreamKey != _refreshKey) {
+      _savedStream = repo.watchSavedListings(userId);
+      _savedStreamUser = userId;
+      _savedStreamKey = _refreshKey;
+    }
+    return _savedStream!;
+  }
+
   Future<void> _onRefresh() async {
     HapticFeedback.lightImpact();
     setState(() => _refreshKey++);
@@ -127,7 +147,7 @@ class _SavedScreenState extends State<SavedScreen>
           final allSavedIds = savedProvider.savedIds;
           return StreamBuilder<List<PropertyModel>>(
             key: ValueKey(_refreshKey),
-            stream: repo.watchSavedListings(userId),
+            stream: _streamFor(repo, userId),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return _ErrorState(message: snapshot.error.toString());

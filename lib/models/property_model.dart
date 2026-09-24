@@ -43,6 +43,7 @@ class PropertyModel {
     this.featuredUntil,
     /// Firestore `expirationDate` — non-Airbnb listing expiry (iOS `ListingExpirationPolicy`).
     this.expirationDate,
+    this.verifiedRealtorExpirationBonusMonths,
     this.latitude,
     this.virtualTourUrl,
     this.longitude,
@@ -105,6 +106,13 @@ class PropertyModel {
   final DateTime? featuredUntil;
   /// Listing expiry for search/rules (`expirationDate` / `expiration_date`).
   final DateTime? expirationDate;
+  /// Verified Realtor Rewards — Rental Expiration Bonus. Server-set only, by
+  /// `enforceVerifiedRealtorRentalExpirationBonus`
+  /// (functions/verified-realtor-rental-expiration-functions.js); null/0 when
+  /// the bonus doesn't apply. Read-only display field — never sent by the
+  /// client on create/update, since the client must not be able to grant
+  /// itself this benefit.
+  final int? verifiedRealtorExpirationBonusMonths;
   /// From `geo` / `location.latitude` / `location.longitude` when present.
   final double? latitude;
   final double? longitude;
@@ -500,6 +508,8 @@ class PropertyModel {
         _parseTime(data['featuredUntil']) ?? _parseTime(data['featured_until']);
     final expirationDate = _parseTime(data['expirationDate']) ??
         _parseTime(data['expiration_date']);
+    final verifiedRealtorExpirationBonusMonths =
+        (data['verifiedRealtorExpirationBonusMonths'] as num?)?.toInt();
     final isFeatured = data['isFeatured'] as bool? ??
         data['is_featured'] as bool? ??
         false;
@@ -570,6 +580,7 @@ class PropertyModel {
       isFeatured: isFeatured,
       featuredUntil: featuredUntil,
       expirationDate: expirationDate,
+      verifiedRealtorExpirationBonusMonths: verifiedRealtorExpirationBonusMonths,
       latitude: lat,
       longitude: lng,
       virtualTourUrl: data['virtualTourUrl'] as String? ??

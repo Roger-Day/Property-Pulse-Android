@@ -286,10 +286,12 @@ class NewDevelopmentHomeCard extends StatelessWidget {
                               color: scheme.onSurfaceVariant,
                             ),
                           ),
-                          const Spacer(),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
                           // Developer row — icon avatar (no photo field on
-                          // projects), mirrors the lister avatar row.
+                          // projects), mirrors the lister avatar row. Fixed
+                          // gap instead of a fill-to-bottom Spacer so the
+                          // card hugs its content rather than stretching a
+                          // gap between the two (parity with iOS).
                           Row(
                             children: [
                               Container(

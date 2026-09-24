@@ -5,12 +5,22 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
 import '../constants/app_constants.dart';
+import '../models/development_invite_model.dart';
 import '../models/development_team_member_model.dart';
 import '../models/development_team_role.dart';
 import '../models/development_unit_model.dart';
 import '../models/project_interest_model.dart';
 import '../models/project_model.dart';
 import '../models/team_member_directory_entry.dart';
+
+/// User-facing failure from [ProjectRepository.acceptInvite] /
+/// [ProjectRepository.declineInvite] — [message] is safe to show as-is.
+class TeamInviteException implements Exception {
+  const TeamInviteException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
 
 /// One row on a public developer profile — team member deduped across developments.
 class AggregatedPublicTeamMember {
@@ -435,6 +445,16 @@ class ProjectRepository {
         .collection('team')
         .doc(memberId)
         .delete();
+    // Best-effort: also drop the member from the legacy `teamMembers` array
+    // on `projects/{devId}` — developer_dashboard_screen.dart's
+    // _guessCanManageLeads/_guessCanManageUnits still read this array, so
+    // leaving a removed member's uid in it meant "Remove" revoked their
+    // team-doc role but silently left their dashboard buttons enabled.
+    try {
+      await _db.collection(AppConstants.projectsCollection).doc(devId).update({
+        'teamMembers': FieldValue.arrayRemove([memberId]),
+      });
+    } catch (_) {}
     try {
       await FirebaseStorage.instance
           .ref()
@@ -566,6 +586,193 @@ class ProjectRepository {
     await _db.collection('invites').doc().set(payload);
   }
 
+  /// One-shot read of pending invites for [normalizedEmail] — iOS
+  /// `TeamService.fetchPendingInvites`.
+  Future<List<DevelopmentInvite>> fetchPendingInvites(
+    String normalizedEmail,
+  ) async {
+    final email = normalizedEmail.trim().toLowerCase();
+    if (email.isEmpty) return [];
+    final snap = await _db
+        .collection('invites')
+        .where('email', isEqualTo: email)
+        .where('status', isEqualTo: 'pending')
+        .get();
+    return snap.docs
+        .map(DevelopmentInvite.fromFirestore)
+        .whereType<DevelopmentInvite>()
+        .toList();
+  }
+
+  /// iOS `TeamService.listenPendingInvites`.
+  Stream<List<DevelopmentInvite>> watchPendingInvites(String normalizedEmail) {
+    final email = normalizedEmail.trim().toLowerCase();
+    if (email.isEmpty) return Stream.value(const []);
+    return _db
+        .collection('invites')
+        .where('email', isEqualTo: email)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .map((snap) => snap.docs
+            .map(DevelopmentInvite.fromFirestore)
+            .whereType<DevelopmentInvite>()
+            .toList());
+  }
+
+  /// One-shot lookup of the signed-in user's email for invite matching —
+  /// Auth email first, falling back to `users/{uid}.email` (mirrors iOS
+  /// `TeamService.normalizedCurrentUserEmailForInvites`, for accounts
+  /// without an Auth-level email, e.g. phone sign-in).
+  Future<String> _normalizedCurrentUserEmail(
+    String uid,
+    String? authEmail,
+  ) async {
+    final direct = authEmail?.trim().toLowerCase() ?? '';
+    if (direct.isNotEmpty) return direct;
+    final snap = await _db.collection('users').doc(uid).get();
+    final raw = (snap.data()?['email'] as String?)?.trim() ?? '';
+    if (raw.isEmpty) {
+      throw const TeamInviteException('Could not verify your account email.');
+    }
+    return raw.toLowerCase();
+  }
+
+  /// iOS `TeamService.acceptInvite` — validates the invite belongs to the
+  /// signed-in user and is still pending, then creates the
+  /// `developments/{id}/team/{uid}` doc granting access.
+  Future<void> acceptInvite({
+    required String inviteId,
+    required String userId,
+    String? authEmail,
+  }) async {
+    final uid = userId.trim();
+    final id = inviteId.trim();
+    if (uid.isEmpty || id.isEmpty) return;
+
+    final normalizedEmail = await _normalizedCurrentUserEmail(uid, authEmail);
+
+    final inviteRef = _db.collection('invites').doc(id);
+    final snap = await inviteRef.get();
+    final data = snap.data();
+    if (data == null) {
+      throw const TeamInviteException('This invite no longer exists.');
+    }
+
+    final email = (data['email'] as String?)?.trim().toLowerCase() ?? '';
+    if (email != normalizedEmail) {
+      throw const TeamInviteException(
+        'This invite was sent to a different email address.',
+      );
+    }
+    final status = (data['status'] as String?)?.trim().toLowerCase() ?? '';
+    if (status != 'pending') {
+      throw const TeamInviteException('This invite is no longer pending.');
+    }
+    final developmentId = (data['developmentId'] as String?)?.trim() ?? '';
+    if (developmentId.isEmpty) {
+      throw const TeamInviteException('This invite is missing its development.');
+    }
+    final role = DevelopmentTeamRole.decode(data['role'] as String?);
+    if (role == null || !DevelopmentTeamRole.invitableRoles.contains(role)) {
+      throw const TeamInviteException('This invite has an invalid role.');
+    }
+    final rawTitle = (data['roleTitle'] as String?)?.trim() ?? '';
+
+    final teamRef = _db
+        .collection(AppConstants.developmentsCollection)
+        .doc(developmentId)
+        .collection('team')
+        .doc(uid);
+
+    final teamPayload = <String, dynamic>{
+      'userId': uid,
+      'role': role.firestoreValue,
+      'addedBy': uid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'inviteId': id,
+      if (rawTitle.isNotEmpty) 'roleTitle': rawTitle,
+    };
+
+    // Both writes happen atomically in one transaction — previously the
+    // team doc was written first, then the invite status update ran in a
+    // best-effort try/catch. If that second write failed (a transient
+    // network drop right after the team doc committed), the invite stayed
+    // 'status: pending' forever even though the user had already joined,
+    // so DevelopmentPendingInvitesProvider's pending-invites query kept
+    // matching it and the "You've been invited…" sheet reappeared for an
+    // already-a-member user. A transaction makes the two writes succeed or
+    // fail together instead. `validateInviteForTeamCreate` (the security
+    // rule backing the team-doc create) already accepts the invite being
+    // either 'pending' or 'accepted' specifically so this doesn't depend
+    // on which write the rules engine evaluates first within the
+    // transaction.
+    await _db.runTransaction((tx) async {
+      final teamSnap = await tx.get(teamRef);
+      if (teamSnap.exists) {
+        // Already on the team — just mark the invite accepted.
+        tx.update(inviteRef, {'status': 'accepted'});
+        return;
+      }
+      tx.set(teamRef, teamPayload);
+      tx.update(inviteRef, {'status': 'accepted'});
+    });
+  }
+
+  /// iOS `TeamService.declineInvite`.
+  Future<void> declineInvite({
+    required String inviteId,
+    required String userId,
+    String? authEmail,
+  }) async {
+    final id = inviteId.trim();
+    final uid = userId.trim();
+    if (id.isEmpty || uid.isEmpty) return;
+
+    final normalizedEmail = await _normalizedCurrentUserEmail(uid, authEmail);
+    final inviteRef = _db.collection('invites').doc(id);
+    final snap = await inviteRef.get();
+    final data = snap.data();
+    if (data == null) {
+      throw const TeamInviteException('This invite no longer exists.');
+    }
+    final email = (data['email'] as String?)?.trim().toLowerCase() ?? '';
+    if (email != normalizedEmail) {
+      throw const TeamInviteException(
+        'This invite was sent to a different email address.',
+      );
+    }
+    final status = (data['status'] as String?)?.trim().toLowerCase() ?? '';
+    if (status != 'pending') {
+      throw const TeamInviteException('This invite is no longer pending.');
+    }
+    await inviteRef.update({'status': 'declined'});
+  }
+
+  /// iOS `TeamService.fetchDevelopmentDisplayName`.
+  Future<String?> fetchDevelopmentDisplayName(String developmentId) async {
+    final devId = developmentId.trim();
+    if (devId.isEmpty) return null;
+    try {
+      final projectSnap = await _db
+          .collection(AppConstants.projectsCollection)
+          .doc(devId)
+          .get();
+      final pData = projectSnap.data();
+      if (pData != null) {
+        final name = (pData['projectName'] as String?)?.trim() ??
+            (pData['name'] as String?)?.trim();
+        if (name != null && name.isNotEmpty) return name;
+      }
+      final devSnap = await _db
+          .collection(AppConstants.developmentsCollection)
+          .doc(devId)
+          .get();
+      final name = (devSnap.data()?['name'] as String?)?.trim();
+      if (name != null && name.isNotEmpty) return name;
+    } catch (_) {}
+    return null;
+  }
+
   /// Developments where the user is owner, listed developer, or team member — iOS `myDevelopments`.
   Stream<List<ProjectModel>> watchMyPortfolioProjects(
     String uid, {
@@ -591,19 +798,53 @@ class ProjectRepository {
       });
     }
 
+    // `teamMembers` (below) is a legacy field: only `createDraftProject` ever
+    // seeds it (with just the owner), and nothing writes to it when a team
+    // member is actually added via the Team screen — mirrors iOS's own
+    // documented finding ("those legacy fields are never written to by the
+    // current invite/accept flow"). The real source of truth, on both
+    // platforms, is the `developments/{id}/team/{uid}` subcollection doc
+    // (`userId` field set on creation) — iOS reads it via
+    // `TeamService.listenMyMemberships`'s `collectionGroup("team")` query;
+    // this mirrors that so a team member's development actually shows up in
+    // their own portfolio instead of only being reachable by someone who
+    // already has the direct link.
     final queries = [
       col.where('developerId', isEqualTo: trimmed).limit(80),
       col.where('ownerId', isEqualTo: trimmed).limit(80),
       col.where('teamMembers', arrayContains: trimmed).limit(80),
     ];
+    final teamQuery =
+        _db.collectionGroup('team').where('userId', isEqualTo: trimmed);
 
     return Stream.multi((controller) {
       final latest =
           List<QuerySnapshot<Map<String, dynamic>>?>.filled(queries.length, null);
       final subs = <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
+      // Development ids the collectionGroup listener currently says this
+      // user belongs to, followed live via batched `projects` queries (a
+      // one-shot get() here left team members looking at a stale copy
+      // forever, and could overwrite the fresher live result). Batched
+      // (chunks of up to 30 ids, Firestore's whereIn limit) instead of one
+      // `projects/{id}` listener per membership — a team member on N
+      // developments previously opened N concurrent live listeners; this
+      // opens ceil(N/30).
+      var teamDevelopmentIds = const <String>{};
+      final teamProjectsById = <String, ProjectModel>{};
+      final teamProjectChunkSubs =
+          <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
 
       void emit() {
         final byId = <String, ProjectModel>{};
+        // Team-derived entries first so the live owner/developer queries,
+        // which are authoritative for projects the user directly owns,
+        // win on any overlap.
+        for (final entry in teamProjectsById.entries) {
+          if (teamDevelopmentIds.contains(entry.key) &&
+              !_isSampleOrSeed(entry.value)) {
+            byId[entry.key] = entry.value;
+          }
+        }
         for (var i = 0; i < queries.length; i++) {
           final snap = latest[i];
           if (snap == null) continue;
@@ -633,8 +874,70 @@ class ProjectRepository {
         );
       }
 
+      // The team leg is supplementary: if it fails (missing collection-group
+      // index/rule on this deployment) the projects the user directly owns
+      // must still load, so its errors are swallowed rather than forwarded
+      // to the stream where they would replace the whole dashboard.
+      subs.add(
+        teamQuery.snapshots().listen(
+          (snap) {
+            final ids = <String>{};
+            for (final d in snap.docs) {
+              final devId = d.reference.parent.parent?.id;
+              if (devId != null && devId.isNotEmpty) ids.add(devId);
+            }
+            if (ids.length == teamDevelopmentIds.length &&
+                ids.every(teamDevelopmentIds.contains)) {
+              return;
+            }
+            teamDevelopmentIds = ids;
+
+            // whereIn's value list is fixed at subscription time, so a
+            // changed membership set needs fresh batched queries.
+            // Membership changes are rare (a team add/remove), so this
+            // trades a little listener churn then for far fewer concurrent
+            // listeners the rest of the time.
+            for (final s in teamProjectChunkSubs) {
+              s.cancel();
+            }
+            teamProjectChunkSubs.clear();
+            teamProjectsById.removeWhere((id, _) => !ids.contains(id));
+
+            final idList = ids.toList();
+            for (var i = 0; i < idList.length; i += 30) {
+              final chunk = idList.sublist(
+                  i, i + 30 > idList.length ? idList.length : i + 30);
+              teamProjectChunkSubs.add(
+                col
+                    .where(FieldPath.documentId, whereIn: chunk)
+                    .snapshots()
+                    .listen(
+                  (chunkSnap) {
+                    for (final change in chunkSnap.docChanges) {
+                      if (change.type == DocumentChangeType.removed) {
+                        teamProjectsById.remove(change.doc.id);
+                      }
+                    }
+                    for (final d in chunkSnap.docs) {
+                      teamProjectsById[d.id] = ProjectModel.fromFirestore(d);
+                    }
+                    emit();
+                  },
+                  onError: (_) {},
+                ),
+              );
+            }
+            emit();
+          },
+          onError: (_) {},
+        ),
+      );
+
       controller.onCancel = () {
         for (final s in subs) {
+          s.cancel();
+        }
+        for (final s in teamProjectChunkSubs) {
           s.cancel();
         }
       };

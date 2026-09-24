@@ -7,19 +7,24 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_colors.dart';
+import '../../models/development_team_role.dart';
 import '../../models/development_unit_model.dart';
 import '../../models/project_interest_model.dart';
+import '../../models/project_model.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/user_role_provider.dart';
 import '../../repositories/project_repository.dart';
 import '../../repositories/property_repository.dart';
 import '../../services/analytics_service.dart';
 import '../../services/developer_monetization_service.dart';
 import '../../services/lead_credit_service.dart';
+import '../../utils/effective_development_role.dart';
+import '../../utils/team_access_permissions.dart';
 import '../developer/lead_credit_topup_screen.dart';
 import 'sales_pipeline_screen.dart';
 
 /// Developer-facing lead list — iOS `ProjectLeadsView` parity.
-class ProjectLeadsScreen extends StatelessWidget {
+class ProjectLeadsScreen extends StatefulWidget {
   const ProjectLeadsScreen({
     super.key,
     required this.projectId,
@@ -30,224 +35,365 @@ class ProjectLeadsScreen extends StatelessWidget {
   final String projectName;
 
   @override
+  State<ProjectLeadsScreen> createState() => _ProjectLeadsScreenState();
+}
+
+class _ProjectLeadsScreenState extends State<ProjectLeadsScreen> {
+  // Built once per (developmentId, uid) — creating it inline inside the
+  // outer StreamBuilder's builder re-subscribed the team-role listener on
+  // every watchProject emission, flashing roleSnap.data back to null and
+  // making canManage flicker to a lower-privilege state on any unrelated
+  // project-doc update. Mirrors developer_dashboard_screen.dart's
+  // _roleStreamFor / edit_development_screen.dart's _roleStreamFor.
+  Stream<DevelopmentTeamRole?>? _roleStream;
+  String? _roleStreamKey;
+
+  Stream<DevelopmentTeamRole?> _roleStreamFor(
+      ProjectRepository repo, String developmentId, String uid) {
+    final key = '$developmentId|$uid';
+    if (_roleStream == null || _roleStreamKey != key) {
+      _roleStreamKey = key;
+      _roleStream = repo.watchMyTeamRole(developmentId, uid);
+    }
+    return _roleStream!;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final repo = context.read<ProjectRepository>();
+    final auth = context.watch<AuthProvider>();
+    final userRole = context.watch<UserRoleProvider>();
+    final uid = auth.user?.uid;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Leads'),
-      ),
-      body: StreamBuilder<List<DevelopmentUnitModel>>(
-        stream: repo.watchDevelopmentUnits(projectId),
-        builder: (context, unitSnap) {
-          final units = unitSnap.data ?? const <DevelopmentUnitModel>[];
-          final unitsById = {for (final u in units) u.id: u};
+    if (uid == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Leads')),
+        body: const Center(child: Text('Sign in to view leads.')),
+      );
+    }
 
-          return StreamBuilder<List<ProjectInterestModel>>(
-            stream: repo.watchProjectInterests(projectId),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return Center(
+    return StreamBuilder<ProjectModel?>(
+      stream: repo.watchProject(widget.projectId),
+      builder: (context, projectSnap) {
+        final project = projectSnap.data;
+        if (projectSnap.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Leads')),
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Could not load this development.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          );
+        }
+        // hasData is false for a null (missing-doc) emission too, so key the
+        // spinner off connection state — otherwise a deleted/unknown project
+        // spun forever with no AppBar or way back.
+        if (projectSnap.connectionState == ConnectionState.waiting) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Leads')),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (project == null) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Leads')),
+            body: const Center(child: Text('Development not found.')),
+          );
+        }
+
+        // Only Owner/Manager/Sales team members (or an app admin) may
+        // handle leads — this screen and its route previously had no
+        // access check at all, so any signed-in user who knew/guessed a
+        // project id could deep-link straight here, view every lead's
+        // contact info, and spend the developer's lead credits unlocking
+        // them. Same permission the toolbar already uses to decide whether
+        // to show the "Leads" button
+        // (project_detail_screen.dart's _ToolbarPermissions.resolve).
+        return StreamBuilder<DevelopmentTeamRole?>(
+          stream: _roleStreamFor(repo, project.firestoreDocumentId, uid),
+          builder: (context, roleSnap) {
+            final effective = resolveEffectiveDevelopmentRole(
+              isAppAdmin: userRole.isAdmin,
+              currentUserId: uid,
+              project: project,
+              firestoreTeamDocRole: roleSnap.data,
+            );
+            final canManage = userRole.isAdmin ||
+                TeamAccessPermissions.canHandleInquiries(effective);
+            // Don't flash "no permission" while the team role / admin flag
+            // are still resolving (an admin or Manager saw it on every open).
+            if (!canManage &&
+                (roleSnap.connectionState == ConnectionState.waiting ||
+                    !userRole.adminRoleResolved)) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Leads')),
+                body: const Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (!canManage) {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Leads')),
+                body: const Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(24),
+                    padding: EdgeInsets.all(24),
                     child: Text(
-                      snapshot.error.toString(),
+                      "You don't have permission to view this development's leads.",
                       textAlign: TextAlign.center,
                     ),
                   ),
-                );
-              }
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final leads = snapshot.data!;
-              if (leads.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.people_outline,
-                          size: 56,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant
-                              .withValues(alpha: 0.5),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No leads yet',
-                          style:
-                              Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color:
-                                        Theme.of(context).colorScheme.onSurface,
-                                  ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Interests from “Register interest” will appear here.',
-                          textAlign: TextAlign.center,
-                          style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-
-              final totalClosed = leads
-                  .where(
-                    (l) => l.conversionStatusRaw.toLowerCase() == 'closed',
-                  )
-                  .length;
-              final rate = leads.isEmpty
-                  ? 0
-                  : ((totalClosed / leads.length) * 100).round();
-
-              final pipelineLeads = leads
-                  .map(
-                    (l) => LeadWithProject(
-                      interest: l,
-                      projectName: projectName,
-                      projectId: projectId,
-                    ),
-                  )
-                  .toList();
-
-              void openDetail(ProjectInterestModel lead) {
-                showModalBottomSheet<void>(
-                  context: context,
-                  isScrollControlled: true,
-                  showDragHandle: true,
-                  builder: (ctx) => _LeadDetailSheet(
-                    lead: lead,
-                    projectId: projectId,
-                    projectName: projectName,
-                    units: units,
-                  ),
-                );
-              }
-
-              return RefreshIndicator(
-                onRefresh: () async {
-                  await Future<void>.delayed(const Duration(milliseconds: 200));
-                },
-                child: ListView(
-                  padding: const EdgeInsets.only(bottom: 32),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-                      child: Text(
-                        'Project',
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Text(
-                        projectName,
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Text(
-                        'Analytics',
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ),
-                    _AnalyticsRow(
-                      icon: Icons.people,
-                      label: 'Total leads',
-                      value: '${leads.length}',
-                    ),
-                    _AnalyticsRow(
-                      icon: Icons.check_circle,
-                      label: 'Closed',
-                      value: '$totalClosed',
-                    ),
-                    _AnalyticsRow(
-                      icon: Icons.show_chart,
-                      label: 'Conversion rate',
-                      value: '$rate%',
-                    ),
-                    const SizedBox(height: 12),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Text(
-                        'Sales pipeline',
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ),
-                    SalesPipelineBoard(
-                      leads: pipelineLeads,
-                      minHeight: 300,
-                      onSelectLead: (lw) => openDetail(lw.interest),
-                    ),
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Text(
-                        'Interests',
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    ...leads.map(
-                      (l) => Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 4,
-                        ),
-                        child: _LeadTile(
-                          lead: l,
-                          projectId: projectId,
-                          projectName: projectName,
-                          unitsById: unitsById,
-                          onOpenDetail: () => openDetail(l),
-                        ),
-                      ),
-                    ),
-                  ],
                 ),
               );
-            },
-          );
-        },
-      ),
+            }
+
+            return Scaffold(
+              appBar: AppBar(
+                title: const Text('Leads'),
+              ),
+              body: StreamBuilder<List<DevelopmentUnitModel>>(
+                stream: repo.watchDevelopmentUnits(widget.projectId),
+                builder: (context, unitSnap) {
+                  final units = unitSnap.data ?? const <DevelopmentUnitModel>[];
+                  final unitsById = {for (final u in units) u.id: u};
+
+                  return StreamBuilder<List<ProjectInterestModel>>(
+                    stream: repo.watchProjectInterests(widget.projectId),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              snapshot.error.toString(),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        );
+                      }
+                      if (!snapshot.hasData) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      final leads = snapshot.data!;
+                      if (leads.isEmpty) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.people_outline,
+                                  size: 56,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant
+                                      .withValues(alpha: 0.5),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No leads yet',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface,
+                                      ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Interests from “Register interest” will appear here.',
+                                  textAlign: TextAlign.center,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodyMedium
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+
+                      final totalClosed = leads
+                          .where(
+                            (l) =>
+                                l.conversionStatusRaw.toLowerCase() == 'closed',
+                          )
+                          .length;
+                      final rate = leads.isEmpty
+                          ? 0
+                          : ((totalClosed / leads.length) * 100).round();
+
+                      final pipelineLeads = leads
+                          .map(
+                            (l) => LeadWithProject(
+                              interest: l,
+                              projectName: widget.projectName,
+                              projectId: widget.projectId,
+                            ),
+                          )
+                          .toList();
+
+                      void openDetail(ProjectInterestModel lead) {
+                        showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          showDragHandle: true,
+                          builder: (ctx) => _LeadDetailSheet(
+                            lead: lead,
+                            projectId: widget.projectId,
+                            projectName: widget.projectName,
+                            units: units,
+                          ),
+                        );
+                      }
+
+                      return RefreshIndicator(
+                        onRefresh: () async {
+                          await Future<void>.delayed(
+                              const Duration(milliseconds: 200));
+                        },
+                        child: ListView(
+                          padding: const EdgeInsets.only(bottom: 32),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                              child: Text(
+                                'Project',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelLarge
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 20),
+                              child: Text(
+                                widget.projectName,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 20),
+                              child: Text(
+                                'Analytics',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelLarge
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                            _AnalyticsRow(
+                              icon: Icons.people,
+                              label: 'Total leads',
+                              value: '${leads.length}',
+                            ),
+                            _AnalyticsRow(
+                              icon: Icons.check_circle,
+                              label: 'Closed',
+                              value: '$totalClosed',
+                            ),
+                            _AnalyticsRow(
+                              icon: Icons.show_chart,
+                              label: 'Conversion rate',
+                              value: '$rate%',
+                            ),
+                            const SizedBox(height: 12),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 20),
+                              child: Text(
+                                'Sales pipeline',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelLarge
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                            SalesPipelineBoard(
+                              leads: pipelineLeads,
+                              minHeight: 300,
+                              onSelectLead: (lw) => openDetail(lw.interest),
+                            ),
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 20),
+                              child: Text(
+                                'Interests',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelLarge
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...leads.map(
+                              (l) => Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 4,
+                                ),
+                                child: _LeadTile(
+                                  lead: l,
+                                  projectId: widget.projectId,
+                                  projectName: widget.projectName,
+                                  unitsById: unitsById,
+                                  onOpenDetail: () => openDetail(l),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -358,7 +504,8 @@ class _LeadTileState extends State<_LeadTile> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _marking = false);
@@ -380,10 +527,11 @@ class _LeadTileState extends State<_LeadTile> {
     final me = context.read<AuthProvider>().user?.uid;
     if (me == null || me.isEmpty) return;
     try {
-      final threadId = await context.read<PropertyRepository>().ensureDirectConversation(
-            currentUserId: me,
-            otherUserId: uid,
-          );
+      final threadId =
+          await context.read<PropertyRepository>().ensureDirectConversation(
+                currentUserId: me,
+                otherUserId: uid,
+              );
       if (!mounted) return;
       context.push('/messages/thread/$threadId');
     } catch (e) {
@@ -502,7 +650,8 @@ class _LeadTileState extends State<_LeadTile> {
               const SizedBox(height: 10),
               // Pricing context — lets the developer know the cost before tapping.
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: Colors.blue.shade50,
                   borderRadius: BorderRadius.circular(8),
@@ -510,7 +659,8 @@ class _LeadTileState extends State<_LeadTile> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline, size: 14, color: Colors.blue.shade700),
+                    Icon(Icons.info_outline,
+                        size: 14, color: Colors.blue.shade700),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -761,7 +911,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -782,7 +933,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -802,7 +954,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
       if (mounted) setState(() => _savingNotes = false);
@@ -879,7 +1032,8 @@ class _LeadDetailSheetState extends State<_LeadDetailSheet> {
                   labelText: 'Unit',
                 ),
                 items: [
-                  const DropdownMenuItem(value: '', child: Text('Not assigned')),
+                  const DropdownMenuItem(
+                      value: '', child: Text('Not assigned')),
                   ...widget.units.map(
                     (u) => DropdownMenuItem(
                       value: u.id,
