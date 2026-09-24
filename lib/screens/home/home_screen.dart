@@ -533,14 +533,25 @@ class _HeroHeaderState extends State<_HeroHeader>
   }
 
   /// Firestore aggregate count — fast, doesn't download documents (iOS parity).
+  ///
+  /// No `.where('deleted', isEqualTo: false)` on the count itself —
+  /// `isEqualTo: false` silently excludes any doc missing the `deleted`
+  /// field (legacy listings), undercounting real inventory. Instead take
+  /// the total count and subtract only docs explicitly `deleted: true`,
+  /// which correctly includes legacy docs with no `deleted` field at all —
+  /// still two lightweight aggregates, no documents downloaded.
   Future<void> _fetchCount() async {
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection('properties')
-          .where('deleted', isEqualTo: false)
-          .count()
-          .get();
-      if (mounted) setState(() => _totalProperties = snap.count?.toInt());
+      final col = FirebaseFirestore.instance.collection('properties');
+      final results = await Future.wait([
+        col.count().get(),
+        col.where('deleted', isEqualTo: true).count().get(),
+      ]);
+      final total = results[0].count?.toInt();
+      final deleted = results[1].count?.toInt();
+      if (mounted && total != null) {
+        setState(() => _totalProperties = total - (deleted ?? 0));
+      }
     } catch (_) {
       // Fall back to in-memory count — no action needed (same as iOS)
     }

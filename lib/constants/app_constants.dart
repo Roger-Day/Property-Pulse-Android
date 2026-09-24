@@ -88,6 +88,13 @@ class AppConstants {
   /// a real population to narrow instead of an arbitrary 20-doc window that
   /// likely contains no matching listings at all.
   static const int clientSideTypeFilterPoolSize = 400;
+  /// Pool fetched when a *milder* client-side-only filter is active (a
+  /// single price/amenity/date/etc. constraint) — these typically keep a
+  /// meaningful fraction of a window, unlike the airbnb type mismatch or a
+  /// tight geo radius, which can exclude nearly all of it. Smaller than
+  /// [clientSideTypeFilterPoolSize] to avoid paying that pool's full read
+  /// cost on every ordinary filtered search.
+  static const int clientSideFilterPoolSize = 100;
   static const int messagesPageSize = 30;
 
   /// Image

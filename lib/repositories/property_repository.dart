@@ -450,11 +450,21 @@ class PropertyRepository {
     final desiredResultCount = limitOverride ?? AppConstants.propertiesPageSize;
     // Same truncate-before-filter problem for the other client-side filters
     // (listing type, status, city/state/zip, amenities, sqft, feature
-    // toggles, dates, verified, query, currency, min price): a 20-doc window
-    // can filter down to a handful, so "Load more" (which only shows when a
-    // full page survives) vanishes even though more matches exist. Widen the
-    // pool whenever any of them is active and cap the survivors below.
+    // toggles, dates, verified, query, currency, min price, geo radius): a
+    // 20-doc window can filter down to a handful, so "Load more" (which
+    // only shows when a full page survives) vanishes even though more
+    // matches exist. Widen the pool whenever any of them is active and cap
+    // the survivors below.
+    //
+    // hasNearFilter was missing here originally — nearLatitude/
+    // nearLongitude/radiusKm are applied client-side by
+    // LocationSearchService.withinRadius just like every filter below, so
+    // it needs the same pool-widening treatment.
+    final hasNearFilter = filter.nearLatitude != null &&
+        filter.nearLongitude != null &&
+        filter.radiusKm != null;
     final hasClientSideFilter = isAirbnbTypeFilter ||
+        hasNearFilter ||
         filter.query.isNotEmpty ||
         filter.minBathrooms > 0 ||
         filter.currencyCode != null ||
@@ -478,9 +488,18 @@ class PropertyRepository {
         filter.verifiedRealtorsOnly ||
         filter.dateFrom != null ||
         filter.dateTo != null;
+    // The airbnb type mismatch and a tight geo radius can each exclude
+    // nearly every doc in a window, so they keep the full (costlier) pool;
+    // every other filter here is a single equality/range/toggle constraint
+    // that typically keeps a much larger fraction, so it gets a smaller
+    // pool instead of paying the same worst-case read cost on every
+    // ordinary filtered search.
+    final hasSevereClientSideFilter = isAirbnbTypeFilter || hasNearFilter;
+    final clientSidePoolSize = hasSevereClientSideFilter
+        ? AppConstants.clientSideTypeFilterPoolSize
+        : AppConstants.clientSideFilterPoolSize;
     final fetchLimit = hasClientSideFilter
-        ? (AppConstants.clientSideTypeFilterPoolSize *
-                (desiredResultCount / AppConstants.propertiesPageSize))
+        ? (clientSidePoolSize * (desiredResultCount / AppConstants.propertiesPageSize))
             .ceil()
         : desiredResultCount;
 

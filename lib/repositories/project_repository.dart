@@ -683,12 +683,6 @@ class ProjectRepository {
         .doc(developmentId)
         .collection('team')
         .doc(uid);
-    final teamSnap = await teamRef.get();
-    if (teamSnap.exists) {
-      // Already on the team — just mark the invite accepted.
-      await inviteRef.update({'status': 'accepted'});
-      return;
-    }
 
     final teamPayload = <String, dynamic>{
       'userId': uid,
@@ -699,15 +693,29 @@ class ProjectRepository {
       if (rawTitle.isNotEmpty) 'roleTitle': rawTitle,
     };
 
-    // Write the team doc FIRST while the invite is still 'pending' — mirrors
-    // iOS, whose comment notes the rules authorize team-doc creation off a
-    // pending invite. Use try/catch so a transient failure marking the
-    // invite accepted afterward does not read as the whole operation
-    // failing — the user is already on the team at that point.
-    await teamRef.set(teamPayload);
-    try {
-      await inviteRef.update({'status': 'accepted'});
-    } catch (_) {}
+    // Both writes happen atomically in one transaction — previously the
+    // team doc was written first, then the invite status update ran in a
+    // best-effort try/catch. If that second write failed (a transient
+    // network drop right after the team doc committed), the invite stayed
+    // 'status: pending' forever even though the user had already joined,
+    // so DevelopmentPendingInvitesProvider's pending-invites query kept
+    // matching it and the "You've been invited…" sheet reappeared for an
+    // already-a-member user. A transaction makes the two writes succeed or
+    // fail together instead. `validateInviteForTeamCreate` (the security
+    // rule backing the team-doc create) already accepts the invite being
+    // either 'pending' or 'accepted' specifically so this doesn't depend
+    // on which write the rules engine evaluates first within the
+    // transaction.
+    await _db.runTransaction((tx) async {
+      final teamSnap = await tx.get(teamRef);
+      if (teamSnap.exists) {
+        // Already on the team — just mark the invite accepted.
+        tx.update(inviteRef, {'status': 'accepted'});
+        return;
+      }
+      tx.set(teamRef, teamPayload);
+      tx.update(inviteRef, {'status': 'accepted'});
+    });
   }
 
   /// iOS `TeamService.declineInvite`.
@@ -814,13 +822,17 @@ class ProjectRepository {
           List<QuerySnapshot<Map<String, dynamic>>?>.filled(queries.length, null);
       final subs = <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
       // Development ids the collectionGroup listener currently says this
-      // user belongs to, each followed live via its own `projects/{id}`
-      // listener (a one-shot get() here left team members looking at a
-      // stale copy forever, and could overwrite the fresher live result).
+      // user belongs to, followed live via batched `projects` queries (a
+      // one-shot get() here left team members looking at a stale copy
+      // forever, and could overwrite the fresher live result). Batched
+      // (chunks of up to 30 ids, Firestore's whereIn limit) instead of one
+      // `projects/{id}` listener per membership — a team member on N
+      // developments previously opened N concurrent live listeners; this
+      // opens ceil(N/30).
       var teamDevelopmentIds = const <String>{};
       final teamProjectsById = <String, ProjectModel>{};
-      final teamProjectSubs =
-          <String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>{};
+      final teamProjectChunkSubs =
+          <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
 
       void emit() {
         final byId = <String, ProjectModel>{};
@@ -874,27 +886,45 @@ class ProjectRepository {
               final devId = d.reference.parent.parent?.id;
               if (devId != null && devId.isNotEmpty) ids.add(devId);
             }
-            teamDevelopmentIds = ids;
-            // Drop memberships that disappeared (e.g. removeTeamMember
-            // deleting the team doc) so they don't linger.
-            for (final id in teamProjectSubs.keys
-                .where((id) => !ids.contains(id))
-                .toList()) {
-              teamProjectSubs.remove(id)?.cancel();
-              teamProjectsById.remove(id);
+            if (ids.length == teamDevelopmentIds.length &&
+                ids.every(teamDevelopmentIds.contains)) {
+              return;
             }
-            for (final id in ids) {
-              if (teamProjectSubs.containsKey(id)) continue;
-              teamProjectSubs[id] = col.doc(id).snapshots().listen(
-                (doc) {
-                  if (doc.exists) {
-                    teamProjectsById[id] = ProjectModel.fromFirestore(doc);
-                  } else {
-                    teamProjectsById.remove(id);
-                  }
-                  emit();
-                },
-                onError: (_) {},
+            teamDevelopmentIds = ids;
+
+            // whereIn's value list is fixed at subscription time, so a
+            // changed membership set needs fresh batched queries.
+            // Membership changes are rare (a team add/remove), so this
+            // trades a little listener churn then for far fewer concurrent
+            // listeners the rest of the time.
+            for (final s in teamProjectChunkSubs) {
+              s.cancel();
+            }
+            teamProjectChunkSubs.clear();
+            teamProjectsById.removeWhere((id, _) => !ids.contains(id));
+
+            final idList = ids.toList();
+            for (var i = 0; i < idList.length; i += 30) {
+              final chunk = idList.sublist(
+                  i, i + 30 > idList.length ? idList.length : i + 30);
+              teamProjectChunkSubs.add(
+                col
+                    .where(FieldPath.documentId, whereIn: chunk)
+                    .snapshots()
+                    .listen(
+                  (chunkSnap) {
+                    for (final change in chunkSnap.docChanges) {
+                      if (change.type == DocumentChangeType.removed) {
+                        teamProjectsById.remove(change.doc.id);
+                      }
+                    }
+                    for (final d in chunkSnap.docs) {
+                      teamProjectsById[d.id] = ProjectModel.fromFirestore(d);
+                    }
+                    emit();
+                  },
+                  onError: (_) {},
+                ),
               );
             }
             emit();
@@ -907,7 +937,7 @@ class ProjectRepository {
         for (final s in subs) {
           s.cancel();
         }
-        for (final s in teamProjectSubs.values) {
+        for (final s in teamProjectChunkSubs) {
           s.cancel();
         }
       };

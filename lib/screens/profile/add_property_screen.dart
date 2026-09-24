@@ -487,28 +487,36 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
   }
 
   Future<void> _save() async {
-    // Re-entrancy guard: everything below is synchronous up to the
-    // `setState(_canSave = false)` a few lines down, so a rapid double-tap's
-    // second `_save()` call can only actually start executing after the
-    // first has already flipped `_canSave` to false (Dart runs a function
-    // synchronously up to its first `await`, so the second call is queued
-    // behind that, not interleaved with it) — without this, both taps could
-    // pass the entitlement/quota checks with the same pre-write count and
-    // each create their own duplicate listing.
+    // Re-entrancy guard: flips `_canSave` false BEFORE any awaited work,
+    // including the validation-error alerts below — a rapid double-tap
+    // while one of those alerts is still awaiting dismissal previously
+    // passed this guard unchanged (it wasn't set until after all
+    // validation), letting the second tap re-run the same validation and
+    // stack a second AlertDialog. Every early return past this point must
+    // restore `_canSave` to true (matching the existing seeker/limit-dialog
+    // and write-path resets below), since Dart only runs synchronously up
+    // to the first `await`, so the second call is queued behind whichever
+    // await this one is in, not interleaved with it.
     if (!_canSave) return;
+    setState(() => _canSave = false);
 
     FocusScope.of(context).unfocus();
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      setState(() => _canSave = true);
+      return;
+    }
 
     final title = _titleCtrl.text.trim();
     final priceText = _priceCtrl.text.trim();
     if (title.isEmpty) {
       await _showErrorAlert('Please enter a property title.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
     final priceVal = double.tryParse(priceText);
     if (priceText.isEmpty || priceVal == null || priceVal <= 0) {
       await _showErrorAlert('Please enter a valid price.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
     if (_streetCtrl.text.trim().isEmpty ||
@@ -516,10 +524,9 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
         _stateCtrl.text.trim().isEmpty ||
         _zipCtrl.text.trim().isEmpty) {
       await _showErrorAlert('Please fill in all address fields.');
+      if (mounted) setState(() => _canSave = true);
       return;
     }
-
-    setState(() => _canSave = false);
 
     final profileRepo = context.read<UserProfileRepository>();
     final roleProv = context.read<UserRoleProvider>();

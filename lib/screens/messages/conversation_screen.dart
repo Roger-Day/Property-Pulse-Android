@@ -1977,14 +1977,20 @@ class _PropertyPickerForChatState extends State<_PropertyPickerForChat> {
 
   Future<void> _load() async {
     try {
+      // No server-side `deleted` filter — `isEqualTo: false` silently drops
+      // any doc missing the field (legacy listings), hiding them from this
+      // picker. Fetch a wider pool and filter deleted out client-side
+      // instead, so the post-filter list still has close to 50 to show.
       final snap = await FirebaseFirestore.instance
           .collection('properties')
-          .where('deleted', isEqualTo: false)
-          .limit(50)
+          .limit(100)
           .get();
       if (!mounted) return;
       setState(() {
-        _results = snap.docs.map((d) {
+        _results = snap.docs
+            .where((d) => d.data()['deleted'] != true)
+            .take(50)
+            .map((d) {
           final m = d.data();
           return {
             'id': d.id,

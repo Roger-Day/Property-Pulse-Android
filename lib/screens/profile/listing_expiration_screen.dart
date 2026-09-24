@@ -36,10 +36,15 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
     // Mirror iOS ListingExpirationViewModel: run parallel queries for
     // ownerId, realtorId, and hostUserId so all listing roles are covered.
     // Firestore doesn't support OR, so we run three queries and deduplicate.
+    //
+    // No server-side `deleted` filter — `isEqualTo: false` silently drops
+    // any doc missing the field entirely (legacy listings predating it),
+    // which would hide them from this screen and make them unrenewable.
+    // Filtered out client-side below instead.
     final results = await Future.wait([
-      col.where('ownerId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
-      col.where('realtorId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
-      col.where('hostUserId', isEqualTo: uid).where('deleted', isEqualTo: false).get(),
+      col.where('ownerId', isEqualTo: uid).get(),
+      col.where('realtorId', isEqualTo: uid).get(),
+      col.where('hostUserId', isEqualTo: uid).get(),
     ]);
 
     // Deduplicate by doc id
@@ -47,6 +52,7 @@ class _ListingExpirationScreenState extends State<ListingExpirationScreen> {
     final allDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
     for (final snap in results) {
       for (final doc in snap.docs) {
+        if (doc.data()['deleted'] == true) continue;
         if (seen.add(doc.id)) allDocs.add(doc);
       }
     }
