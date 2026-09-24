@@ -40,7 +40,7 @@ class _SearchHistoryScreenState extends State<SearchHistoryScreen> {
 
   Future<List<_HistoryEntry>> _fetch(String uid) async {
     final snap = await FirebaseFirestore.instance
-        .collection('searchHistory')
+        .collection('search_history')
         .where('userId', isEqualTo: uid)
         .orderBy('timestamp', descending: true)
         .limit(50)
@@ -61,7 +61,7 @@ class _SearchHistoryScreenState extends State<SearchHistoryScreen> {
   Future<void> _clearAll(String uid) async {
     try {
       final snap = await FirebaseFirestore.instance
-          .collection('searchHistory')
+          .collection('search_history')
           .where('userId', isEqualTo: uid)
           .get();
       final batch = FirebaseFirestore.instance.batch();
@@ -80,7 +80,7 @@ class _SearchHistoryScreenState extends State<SearchHistoryScreen> {
   Future<void> _deleteEntry(String id) async {
     try {
       await FirebaseFirestore.instance
-          .collection('searchHistory')
+          .collection('search_history')
           .doc(id)
           .delete();
       _load();
@@ -182,6 +182,19 @@ class _HistoryEntry {
 }
 
 /// Helper to save a search to history.
+///
+/// Collection is `search_history` (snake_case) — this screen previously
+/// read/wrote a different collection, `searchHistory` (camelCase), which
+/// had no security rule at all (every read/write here always failed with
+/// PERMISSION_DENIED) and was never the same collection
+/// market_intelligence_screen.dart's "Search Trends" panel reads from, so
+/// that panel's data was always empty too. Renamed to the name the rule and
+/// Market Intelligence already agree on, rather than adding a second rule
+/// for a second, redundant collection.
+///
+/// Note: as of this fix nothing calls this function yet — it needs a call
+/// site (e.g. after a search executes) for the Search History screen to
+/// actually have anything to show.
 Future<void> saveSearchHistory({
   required String userId,
   required String query,
@@ -189,7 +202,7 @@ Future<void> saveSearchHistory({
 }) async {
   if (query.trim().isEmpty || userId.isEmpty) return;
   try {
-    await FirebaseFirestore.instance.collection('searchHistory').add({
+    await FirebaseFirestore.instance.collection('search_history').add({
       'userId': userId,
       'query': query.trim(),
       'resultCount': resultCount,
