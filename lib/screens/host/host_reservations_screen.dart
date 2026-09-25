@@ -72,7 +72,15 @@ class _HostReservationsScreenState extends State<HostReservationsScreen> {
       case _ReservationTab.completed:
         return all.where((r) => r.status == 'completed').toList();
       case _ReservationTab.cancelled:
-        return all.where((r) => r.status == 'cancelled').toList();
+        // cancelBooking (Cloud Function) writes the more specific
+        // cancelled_by_guest/cancelled_by_host/cancelled_by_admin rather
+        // than a bare 'cancelled' — those matched none of this screen's
+        // four tab filters, so a cancelled reservation just vanished from
+        // the host's Reservations screen entirely.
+        return all
+            .where((r) => r.status == 'cancelled' ||
+                r.status.startsWith('cancelled_by_'))
+            .toList();
     }
   }
 
