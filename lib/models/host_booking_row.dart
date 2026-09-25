@@ -108,6 +108,14 @@ class HostBookingRow {
         break;
       case 'cancelled':
       case 'canceled':
+      // cancelBooking (Cloud Function) writes the more specific
+      // cancelled_by_guest/cancelled_by_host/cancelled_by_admin rather than
+      // a bare 'cancelled' — those fell through to the 'Pending' default
+      // below, so a successfully cancelled booking displayed as if it were
+      // still awaiting confirmation.
+      case 'cancelled_by_guest':
+      case 'cancelled_by_host':
+      case 'cancelled_by_admin':
         statusLabel = 'Cancelled';
         break;
       case 'declined':
