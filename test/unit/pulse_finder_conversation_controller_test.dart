@@ -44,6 +44,13 @@ class _FakePropertyRepository extends PropertyRepository {
   int callCount = 0;
   final List<PropertyFilter> filterHistory = [];
 
+  /// Regression coverage for the "stuck isSearching" bug: set this to make
+  /// the NEXT `watchFilteredListings` call throw instead of returning
+  /// results, simulating a Firestore failure (a missing composite index for
+  /// an unusual filter combination, a transient network error) during a
+  /// post-results refinement.
+  Object? throwOnNextCall;
+
   void setResults(List<PropertyModel> results) => _results = results;
 
   @override
@@ -54,6 +61,11 @@ class _FakePropertyRepository extends PropertyRepository {
     lastFilter = filter;
     filterHistory.add(filter);
     callCount++;
+    final toThrow = throwOnNextCall;
+    if (toThrow != null) {
+      throwOnNextCall = null;
+      return Stream.error(toThrow);
+    }
     return Stream.value(resultsBuilder?.call(filter) ?? _results);
   }
 }
@@ -524,6 +536,72 @@ void main() {
 
       expect(controller.phase, PulseFinderPhase.error);
       expect(controller.errorMessage, contains('offline'));
+    });
+
+    // Regression coverage for a real reported bug: "you don't get a
+    // follow-up answer once properties have been found". Root cause was
+    // that `_executeSearch` sets `isSearching = true` before its Firestore
+    // read and, before this fix, was only ever reset to `false` on its own
+    // success path — three of `_handleRefinement`'s branches (deterministic
+    // post-results refinements: intent change, remove-property-type,
+    // parsed filter edit) called it with no try/catch at all. Any exception
+    // from `watchFilteredListings` (a missing composite index for an
+    // unusual filter combination was the likely real-world trigger) left
+    // `isSearching` stuck `true` forever, and since `isBusy`
+    // (`isWaitingForReply || isSearching`) gates every `sendMessage` call,
+    // every message for the rest of the session silently no-op'd — exactly
+    // "no follow-up answer", permanently, after the first failure.
+    test('a Firestore failure during a post-results deterministic refinement enters '
+        'the error phase instead of leaving the conversation stuck', () async {
+      // First turn: lock intent to buy and land in the results phase.
+      gateway.setHandler((fn, data) => _chatTurn(
+            reply: 'Searching now.',
+            readyToSearch: true,
+            intent: 'buy',
+          ));
+      await controller.sendMessage('Help me buy a house');
+      expect(controller.phase, PulseFinderPhase.results);
+      expect(controller.profile.intentLocked, isTrue);
+
+      // A post-results message recognized by the fully-deterministic
+      // intent-change keyword detector (no AI call at all) — this is
+      // `_handleRefinement`'s FIRST branch, one of the three that used to
+      // call `_executeSearch` completely unguarded.
+      repo.throwOnNextCall = Exception('simulated Firestore index error');
+      await controller.sendMessage('actually, show me short stay instead');
+
+      // Before the fix: this would hang with isSearching stuck true
+      // forever and no visible error — the assertions below would fail.
+      expect(controller.isSearching, isFalse);
+      expect(controller.isBusy, isFalse);
+      expect(controller.phase, PulseFinderPhase.error);
+      expect(controller.errorMessage, isNotNull);
+    });
+
+    test('the conversation accepts new messages again after that failure — '
+        'the exact bug this guards against ("no follow-up answer")', () async {
+      gateway.setHandler((fn, data) => _chatTurn(
+            reply: 'Searching now.',
+            readyToSearch: true,
+            intent: 'buy',
+          ));
+      await controller.sendMessage('Help me buy a house');
+
+      repo.throwOnNextCall = Exception('simulated Firestore index error');
+      await controller.sendMessage('actually, show me short stay instead');
+      expect(controller.phase, PulseFinderPhase.error);
+
+      // The critical assertion: a FOLLOWING message is not silently
+      // swallowed by a permanently-stuck isBusy guard. Retrying the exact
+      // same refinement (now without a simulated failure) must actually
+      // run and reach the results phase again, not no-op.
+      final callCountBeforeRetry = repo.callCount;
+      await controller.retry();
+
+      expect(repo.callCount, greaterThan(callCountBeforeRetry));
+      expect(controller.phase, PulseFinderPhase.results);
+      expect(controller.profile.intent, PulseFinderIntent.shortStay);
+      expect(controller.errorMessage, isNull);
     });
   });
 
