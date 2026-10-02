@@ -700,6 +700,66 @@ class PulseFinderConversationController extends ChangeNotifier {
     final isFirstSearch = !_completedAtLeastOneSearch;
     final stopwatch = Stopwatch()..start();
 
+    // Root-cause fix: `isSearching` is set above and, before this try/catch
+    // existed, was only ever reset on the success path below — every call
+    // site (five of them: here via _sendTurn/_handleRefinement/
+    // runSearchAgain/resume) had to remember to guard its own call or risk
+    // leaving `isSearching` stuck `true` forever on any exception from the
+    // Firestore reads in this block (a missing composite index for an
+    // unusual filter combination, a transient network error, a permission
+    // error). Since `isBusy` (`isWaitingForReply || isSearching`) gates
+    // every future `sendMessage`, a stuck flag silently broke the whole
+    // conversation for the rest of the session — several call sites had
+    // indeed missed it. Guaranteeing the reset HERE, once, fixes every
+    // caller at the root; the exception is still rethrown so each caller's
+    // own error/retry UX (where it has one) keeps working exactly as before.
+    try {
+      await _runSearchQueries(lane, filter, searchIntent, stopwatch);
+    } catch (e) {
+      isSearching = false;
+      notifyListeners();
+      rethrow;
+    }
+
+    isSearching = false;
+    phase = PulseFinderPhase.results;
+    _completedAtLeastOneSearch = true;
+    _resultsViewedLogged = false;
+    notifyListeners();
+
+    final totalCount = results.length + developments.length;
+    AnalyticsService.logEvent('pulse_finder_search_executed', parameters: {
+      'result_count': totalCount,
+      'latency_ms': envelopeLatencyMs ?? stopwatch.elapsedMilliseconds,
+      'cache_hit': cacheHit,
+      if (searchIntent != null) 'intent': searchIntent.wireValue,
+    });
+    if (recommendations.isNotEmpty) {
+      AnalyticsService.logEvent('pulse_finder_recommendations_generated', parameters: {
+        'recommendation_count': recommendations.length,
+        'total_match_count': results.length,
+      });
+    }
+    if (isFirstSearch && _conversationStartedAt != null) {
+      AnalyticsService.logEvent('pulse_finder_conversation_completed', parameters: {
+        'duration_ms': DateTime.now().difference(_conversationStartedAt!).inMilliseconds,
+      });
+    }
+    _logConversationDebug('search executed', previousProfile: profile, searchExecuted: true);
+    _persistSessionUpdate(searchExecuted: true);
+  }
+
+  /// The actual Firestore-touching work for [_executeSearch], split out so
+  /// the caller can wrap it in a single try/catch that guarantees
+  /// `isSearching` always resets. Populates `results`/`recommendations`/
+  /// `developments`/`profile`/`currentFilter` as a side effect, same as
+  /// before this was split out.
+  Future<void> _runSearchQueries(
+    PulseFinderSearchLane lane,
+    PropertyFilter filter,
+    PulseFinderIntent? searchIntent,
+    Stopwatch stopwatch,
+  ) async {
     if (lane == PulseFinderSearchLane.developments) {
       // Development: routes ENTIRELY to the EXISTING Developments-browse
       // query and never touches PropertyRepository at all (off-plan/
@@ -771,33 +831,6 @@ class PulseFinderConversationController extends ChangeNotifier {
         );
       }
     }
-
-    isSearching = false;
-    phase = PulseFinderPhase.results;
-    _completedAtLeastOneSearch = true;
-    _resultsViewedLogged = false;
-    notifyListeners();
-
-    final totalCount = results.length + developments.length;
-    AnalyticsService.logEvent('pulse_finder_search_executed', parameters: {
-      'result_count': totalCount,
-      'latency_ms': envelopeLatencyMs ?? stopwatch.elapsedMilliseconds,
-      'cache_hit': cacheHit,
-      if (searchIntent != null) 'intent': searchIntent.wireValue,
-    });
-    if (recommendations.isNotEmpty) {
-      AnalyticsService.logEvent('pulse_finder_recommendations_generated', parameters: {
-        'recommendation_count': recommendations.length,
-        'total_match_count': results.length,
-      });
-    }
-    if (isFirstSearch && _conversationStartedAt != null) {
-      AnalyticsService.logEvent('pulse_finder_conversation_completed', parameters: {
-        'duration_ms': DateTime.now().difference(_conversationStartedAt!).inMilliseconds,
-      });
-    }
-    _logConversationDebug('search executed', previousProfile: profile, searchExecuted: true);
-    _persistSessionUpdate(searchExecuted: true);
   }
 
   /// Next step in the auto-expand ladder: drop the specific town/city first
@@ -829,6 +862,46 @@ class PulseFinderConversationController extends ChangeNotifier {
     }
   }
 
+  /// Runs `_executeSearch` for the three fully-deterministic refinement
+  /// branches below (intent change, remove-property-type, parsed filter
+  /// edit) and reports whether it succeeded.
+  ///
+  /// `_executeSearch` sets `isSearching = true` before its Firestore read
+  /// and only ever resets it to `false` on its own success path — it has
+  /// no try/finally of its own. These three branches used to call it
+  /// completely unguarded, so any exception out of
+  /// `PropertyRepository.watchFilteredListings` (a missing composite index
+  /// for an unusual filter combination, a transient network error, a
+  /// permission error) propagated all the way out of `sendMessage`, which
+  /// the UI calls un-awaited — an unhandled Future rejection that left
+  /// `isSearching` stuck at `true` forever. Since `isBusy` (the
+  /// reentrancy guard every `sendMessage` call checks first) is
+  /// `isWaitingForReply || isSearching`, that stuck flag silently no-op'd
+  /// every subsequent message for the rest of the session: exactly the
+  /// reported "no follow-up answer once properties have been found" —
+  /// and specifically on refinements rather than the first search, since
+  /// unusual post-results filter combinations are more likely to hit an
+  /// index gap than the first, simpler search.
+  ///
+  /// Returns `true` on success (caller proceeds to log + confirm as
+  /// before); `false` if the search failed, in which case this has
+  /// already reset `isSearching`, moved to the retryable error state, and
+  /// notified listeners — caller must return immediately without
+  /// appending its own "updated" confirmation.
+  Future<bool> _runDeterministicSearch(String text) async {
+    try {
+      await _executeSearch(profile.filter);
+      return true;
+    } catch (_) {
+      isSearching = false;
+      phase = PulseFinderPhase.error;
+      errorMessage = 'Something went wrong updating your results. Please try again.';
+      _retryAction = () => _handleRefinement(text);
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<void> _handleRefinement(String text) async {
     _retryAction = null;
     if (!profile.intentLocked) return;
@@ -838,7 +911,7 @@ class PulseFinderConversationController extends ChangeNotifier {
     // "let's look at rentals instead" as the initial gathering turns can.
     final proposedIntent = PulseFinderIntentLock.detectIntentKeyword(text);
     if (_resolveIntent(proposedIntent, text)) {
-      await _executeSearch(profile.filter);
+      if (!await _runDeterministicSearch(text)) return;
       AnalyticsService.logEvent('pulse_finder_refinement_used', parameters: {'used_ai': false});
       _appendAssistant(
         "Got it — switching to a ${profile.intent!.displayLabel} search. "
@@ -857,7 +930,7 @@ class PulseFinderConversationController extends ChangeNotifier {
       final updated = profile.tryRemovePropertyType(removeTypeWord);
       if (updated != null) {
         profile = updated;
-        await _executeSearch(profile.filter);
+        if (!await _runDeterministicSearch(text)) return;
         AnalyticsService.logEvent('pulse_finder_refinement_used', parameters: {'used_ai': false});
         _appendAssistant(_refinementConfirmation());
         notifyListeners();
@@ -868,7 +941,7 @@ class PulseFinderConversationController extends ChangeNotifier {
     final deterministic = PulseFinderRefinementParser.tryParse(text, profile.filter);
     if (deterministic != null) {
       profile = profile.copyWith(filter: deterministic);
-      await _executeSearch(profile.filter);
+      if (!await _runDeterministicSearch(text)) return;
       AnalyticsService.logEvent('pulse_finder_refinement_used', parameters: {'used_ai': false});
       _appendAssistant(_refinementConfirmation());
       notifyListeners();
