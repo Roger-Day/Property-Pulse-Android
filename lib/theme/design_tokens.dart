@@ -686,7 +686,18 @@ ThemeData buildPropertyPulseTheme({required bool dark}) {
       backgroundColor: dark ? const Color(0xFF2C2C2E) : PPColors.gray6,
       selectedColor: scheme.primary.withOpacity(0.12),
       checkmarkColor: scheme.primary,
-      labelStyle: PPTypography.chipLabel,
+      // PPTypography.chipLabel carries no color of its own (it's shared
+      // across light/dark). Supplying ANY non-null labelStyle here — even
+      // one with a null color — stops Flutter from falling back to its
+      // own M3 default (ColorScheme.onSurface): Chip's Material wrapper
+      // then defaults an unset label color to white, which was rendering
+      // every plain ActionChip/Chip built on this theme (e.g. Pulse
+      // Finder's quick-reply suggestions) as near-invisible white text on
+      // this chip's light gray5p background. Merging the color back in
+      // here, rather than on PPTypography.chipLabel itself, keeps that
+      // style dark/light-mode-agnostic for the few call sites that
+      // deliberately override color themselves.
+      labelStyle: PPTypography.chipLabel.copyWith(color: scheme.onSurface),
       padding: const EdgeInsets.symmetric(
         horizontal: PPSpacing.sm,
         vertical: PPSpacing.xs,
