@@ -216,6 +216,30 @@ void main() {
       expect(editCalled, isTrue);
       expect(runAgainCalled, isTrue);
     });
+
+    /// Regression: on a narrow phone width, "Edit Search" and "Run Search
+    /// Again" sit side by side each in half the card's width (see the
+    /// Row/Expanded pair in pulse_finder_summary_card.dart). PPOutlinedButton
+    /// previously sized its icon+label Row to its children's natural width
+    /// with no way to shrink, so the longer "Run Search Again" label
+    /// overflowed its button's bounds — a real RenderFlex overflow seen on
+    /// device, not just a layout warning in debug paint.
+    testWidgets('action buttons do not overflow at a narrow phone width', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(_wrap(PulseFinderSummaryCard(
+        filter: const PropertyFilter(maxPrice: 500000),
+        expanded: true,
+        onToggleExpanded: () {},
+        onEditSearch: () {},
+        onRunSearchAgain: () {},
+      )));
+
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('PulseFinderQuickReplies', () {

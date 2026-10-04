@@ -138,10 +138,19 @@ class PPOutlinedButton extends StatelessWidget {
               children: [
                 Icon(icon, size: PPIconSizes.md),
                 const SizedBox(width: PPSpacing.sm),
-                Text(label),
+                // Flexible + ellipsis, not a bare Text: this Row's
+                // MainAxisSize.min sizes it to its children's natural
+                // width, so a button squeezed narrower than icon + full
+                // label (e.g. two of these side by side in an Expanded,
+                // like PulseFinderSummaryCard's "Edit Search" / "Run
+                // Search Again" pair) overflowed its bounds instead of
+                // truncating.
+                Flexible(
+                  child: Text(label, overflow: TextOverflow.ellipsis, maxLines: 1),
+                ),
               ],
             )
-          : Text(label),
+          : Text(label, overflow: TextOverflow.ellipsis, maxLines: 1),
     );
   }
 }
