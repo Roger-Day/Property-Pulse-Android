@@ -168,7 +168,7 @@ class PulseFinderConversationController extends ChangeNotifier {
       if (PulseFinderAcknowledgment.isAcknowledgment(trimmed)) {
         _acknowledge();
       } else if (PulseFinderQuestionAnswerer.isQuestion(trimmed)) {
-        _answerQuestion();
+        _answerQuestion(trimmed);
       } else {
         await _handleRefinement(trimmed);
       }
@@ -337,9 +337,9 @@ class PulseFinderConversationController extends ChangeNotifier {
   /// Mandeville?") reports on the existing result set — it never changes
   /// the search, and never asks the AI (which has no visibility into
   /// listing data by design; see PulseFinderQuestionAnswerer's header).
-  void _answerQuestion() {
+  void _answerQuestion(String questionText) {
     AnalyticsService.logEvent('pulse_finder_question_answered');
-    _appendAssistant(PulseFinderQuestionAnswerer.answer(results, profile.filter));
+    _appendAssistant(PulseFinderQuestionAnswerer.answer(results, profile.filter, questionText));
     notifyListeners();
   }
 

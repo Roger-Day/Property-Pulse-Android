@@ -139,7 +139,16 @@ class _PulseFinderScreenState extends State<PulseFinderScreen> {
                   message: controller.errorMessage!,
                   onRetry: () => context.read<PulseFinderConversationController>().retry(),
                 ),
-              if (controller.phase == PulseFinderPhase.results) ..._buildResultsSection(context, controller),
+              // `isSearching` is set true before `phase` flips to `results` (see
+              // `_executeSearch`), so the FIRST search of a conversation would
+              // otherwise show no loading feedback at all — the typing
+              // indicator above is keyed to `isWaitingForReply`, a different
+              // flag for the AI turn, not the Firestore query. Checking
+              // `isSearching` here too means the "Finding properties…" spinner
+              // (handled by `_buildResultsSection`'s own early return) shows
+              // for every search, not just refinements run from the results phase.
+              if (controller.phase == PulseFinderPhase.results || controller.isSearching)
+                ..._buildResultsSection(context, controller),
             ],
           ),
         ),

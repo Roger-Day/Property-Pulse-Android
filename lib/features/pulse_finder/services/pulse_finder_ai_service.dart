@@ -18,8 +18,17 @@ class PulseFinderAiService {
 
   final AiGateway _gateway;
 
-  /// Sends the full conversation so far (ending on the latest user message)
-  /// and returns the assistant's structured turn.
+  /// Mirrors `MAX_MESSAGES` in `functions/ai-property-chat-validation.js` —
+  /// the server only ever keeps the most recent 24 turns anyway, so sending
+  /// the full (unbounded) local history past that point is wasted upload
+  /// bytes on every single turn of a long-running conversation for context
+  /// the server would discard regardless. Kept in sync manually since Dart
+  /// and the Cloud Function can't share a literal source file.
+  static const int _maxMessagesSent = 24;
+
+  /// Sends the conversation so far (ending on the latest user message, and
+  /// capped to the most recent [_maxMessagesSent] turns) and returns the
+  /// assistant's structured turn.
   ///
   /// [currentIntent]/[currentProfileSummary] are the Intent Lock context
   /// (Phase 3.2) — when intent is already locked client-side, they're sent
@@ -33,10 +42,13 @@ class PulseFinderAiService {
     PulseFinderIntent? currentIntent,
     String? currentProfileSummary,
   }) async {
+    final sent = messages.length > _maxMessagesSent
+        ? messages.sublist(messages.length - _maxMessagesSent)
+        : messages;
     final data = await _gateway.call(
       'aiPropertyChat',
       {
-        'messages': messages
+        'messages': sent
             .map((m) => {
                   'role': m.role == PulseFinderRole.assistant ? 'assistant' : 'user',
                   'text': m.text,

@@ -133,7 +133,18 @@ class PulseFinderRefinementParser {
     );
   }
 
+  // Word-boundary matching, not plain substring — mirrors
+  // PulseFinderIntentLock._containsWord / PulseFinderPropertyTypeDetector's
+  // identical helper, for the identical reason: plain `contains` risks
+  // false-positives on ordinary text that happens to embed a trigger
+  // phrase. Previously the lone holdout still using plain substring
+  // matching among Pulse Finder's three deterministic phrase-matchers.
   static bool _matchesAny(String text, List<String> phrases) {
-    return phrases.any(text.contains);
+    return phrases.any((phrase) => _containsPhrase(text, phrase));
+  }
+
+  static bool _containsPhrase(String text, String phrase) {
+    final pattern = RegExp('\\b${RegExp.escape(phrase)}\\b');
+    return pattern.hasMatch(text);
   }
 }
