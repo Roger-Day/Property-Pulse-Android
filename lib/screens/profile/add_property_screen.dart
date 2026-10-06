@@ -1725,7 +1725,7 @@ class _CrossRoleListingBanner extends StatelessWidget {
         // regardless of whether this banner renders. Never shown to
         // non-realtors, unverified realtors, or non-rental listings.
         if (role == 'realtor' && verificationStatus == 'verified' && isRental) {
-          title = '✓ Verified Realtor Benefit';
+          title = 'Verified Realtor Benefit';
           message =
               'Your verified status gives this rental listing an additional 2 months before expiration.';
           color = Colors.green;

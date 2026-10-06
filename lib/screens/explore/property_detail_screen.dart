@@ -2197,7 +2197,7 @@ class _OwnerListingToolsCardState extends State<_OwnerListingToolsCard> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '✓ Verified Realtor Benefit — includes '
+                        'Verified Realtor Benefit — includes '
                         '${widget.property.verifiedRealtorExpirationBonusMonths} extra '
                         '${widget.property.verifiedRealtorExpirationBonusMonths == 1 ? 'month' : 'months'} '
                         'before expiration.',
