@@ -295,8 +295,11 @@ class PushNotificationService {
     try {
       // Use set(merge:true) so the write succeeds even if the doc doesn't exist
       // yet (e.g. new registrations before the profile is fully created).
+      // `fcmToken` is the legacy single-device field; `fcmTokens` holds every
+      // signed-in device so a message push reaches all of them.
       await _db.collection('users').doc(userId).set({
         'fcmToken': token,
+        'fcmTokens': FieldValue.arrayUnion([token]),
         'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
         'platform': 'android',
       }, SetOptions(merge: true));
@@ -317,8 +320,12 @@ class PushNotificationService {
       return;
     }
     try {
+      final current = _currentToken;
       await _db.collection('users').doc(userId).set({
         'fcmToken': FieldValue.delete(),
+        // Remove only THIS device's token; other devices keep theirs.
+        if (current != null && current.isNotEmpty)
+          'fcmTokens': FieldValue.arrayRemove([current]),
         'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       await _db.collection('user_public').doc(userId).set({
