@@ -633,7 +633,8 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
         'isFeatured': false,
         if (expirationDate != null)
           'expirationDate': Timestamp.fromDate(expirationDate),
-        'trustScore': 100,
+        // No trust score: the server stamps the baseline on every new listing
+        // (onPropertyCreatedStampDefaults) and ignores any value sent.
         'images': urls,
         if (urls.isNotEmpty) 'thumbnailURL': urls.first,
         if (_developmentIdCtrl.text.trim().isNotEmpty)

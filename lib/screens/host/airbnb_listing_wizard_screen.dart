@@ -317,7 +317,8 @@ class _AirbnbListingWizardScreenState
         'deleted': false,
         'createdAt': Timestamp.now(),
         'updatedAt': Timestamp.now(),
-        'trust_score': 100.0,
+        // No trust score: the server stamps the baseline on every new listing
+        // (onPropertyCreatedStampDefaults) and ignores any value sent.
       });
 
       // Update user's airbnbHostInfo. Best-effort: the listing above is
