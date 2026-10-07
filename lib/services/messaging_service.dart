@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
 import '../constants/app_constants.dart';
@@ -222,37 +221,8 @@ class MessagingService {
     };
     await _convRef(db, threadId).update(patch);
 
-    if (otherId.isNotEmpty) {
-      // Best-effort — mirrors iOS MessageViewModel calling this after every
-      // send. Never blocks or fails the message send itself; a push miss
-      // just means the recipient finds out next time they open the app.
-      unawaited(_notifyRecipient(
-        threadId: threadId,
-        senderId: senderId,
-        receiverId: otherId,
-        message: preview,
-      ));
-    }
-  }
-
-  static Future<void> _notifyRecipient({
-    required String threadId,
-    required String senderId,
-    required String receiverId,
-    required String message,
-  }) async {
-    try {
-      final callable = FirebaseFunctions.instanceFor(region: 'us-central1')
-          .httpsCallable('sendMessageNotification');
-      await callable.call<Map<dynamic, dynamic>>({
-        'senderId': senderId,
-        'receiverId': receiverId,
-        'message': message,
-        'conversationId': threadId,
-      });
-    } catch (_) {
-      // Swallow — see doc comment above.
-    }
+    // The recipient's push is sent by the server (onMessageVerdictNotify),
+    // from the stored message and after moderation.
   }
 
   /// iOS threads use `participants` [String]; Android used `participantIds`.

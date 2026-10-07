@@ -65,7 +65,7 @@ class NotificationModel {
     }
 
     // Message notifications carry the conversation under `conversationId`
-    // (see MessagingService._notifyRecipient / PushNotificationService's own
+    // (see the server-sent message push, onMessageVerdictNotify / PushNotificationService's own
     // `data['conversationId'] ?? data['threadId']` fallback) — check that
     // FIRST, and specifically for this type, so a message notification that
     // also happens to carry an unrelated `propertyId` (e.g. the conversation
