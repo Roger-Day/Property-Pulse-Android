@@ -165,6 +165,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         return;
       case 'listing':
       case 'property':
+      // Sent by the server when a listing you saved or liked is sold, rented,
+      // under offer or back on the market.
+      case 'property_status_change':
         final pid = n.referenceId;
         if (pid == null || pid.isEmpty) return;
         context.push('/property/$pid');
@@ -273,6 +276,7 @@ class _NotificationTile extends StatelessWidget {
         break;
       case 'listing':
       case 'property':
+      case 'property_status_change':
         icon = Icons.home_outlined;
         color = AppColors.secondary;
         break;
