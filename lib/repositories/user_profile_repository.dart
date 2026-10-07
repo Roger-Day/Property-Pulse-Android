@@ -8,6 +8,7 @@ import '../constants/app_constants.dart';
 import '../models/appointment_row.dart';
 import '../models/host_booking_row.dart';
 import '../services/appointment_reminder_service.dart';
+import '../services/booking_availability_service.dart';
 import '../services/guest_stays_privacy_store.dart';
 import '../models/notification_model.dart';
 import '../models/property_model.dart';
@@ -1078,32 +1079,15 @@ class UserProfileRepository {
       );
     }
 
-    // Overlap check without composite indexes: load appointments for this property
-    // and compare intervals client-side (same outcome as range queries).
-    final snap = await _db
-        .collection('appointments')
-        .where('propertyId', isEqualTo: propertyId)
-        .get();
+    // Taken slots come from a server function (it returns only times, not who
+    // booked them), so no one can list other users' appointments.
+    final slots = await BookingAvailabilityService.appointmentSlots(propertyId);
 
     final requestedEnd = date.add(Duration(minutes: duration));
 
-    for (final doc in snap.docs) {
-      final data = doc.data();
-      final status = (data['status'] as String? ?? '').toLowerCase().trim();
-      if (status == 'cancelled' ||
-          status == 'canceled' ||
-          status == 'rejected') {
-        continue;
-      }
-      final rawDate = data['date'];
-      final existingStart = rawDate is Timestamp
-          ? rawDate.toDate()
-          : rawDate is DateTime
-              ? rawDate
-              : null;
-      if (existingStart == null) continue;
-      final existingDur = (data['duration'] as num?)?.toInt() ?? 60;
-      final existingEnd = existingStart.add(Duration(minutes: existingDur));
+    for (final slot in slots) {
+      final existingStart = slot.start;
+      final existingEnd = slot.end;
       final overlaps =
           date.isBefore(existingEnd) && existingStart.isBefore(requestedEnd);
       if (overlaps) {

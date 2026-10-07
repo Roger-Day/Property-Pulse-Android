@@ -31,6 +31,7 @@ import '../../utils/responsive.dart';
 import 'package:flutter_stripe/flutter_stripe.dart' show StripeException;
 
 import '../../services/analytics_service.dart';
+import '../../services/booking_availability_service.dart';
 import '../../services/stripe_service.dart';
 import '../reviews/reviews_screen.dart';
 import '../../widgets/full_screen_image_gallery.dart';
@@ -4087,31 +4088,16 @@ class _BookStaySheetState extends State<_BookStaySheet> {
       final db = FirebaseFirestore.instance;
       final unavailable = <String>{};
 
-      Future<void> addBookingsFrom(String collection) async {
-        final snap = await db
-            .collection(collection)
-            .where('propertyId', isEqualTo: widget.property.id)
-            .where('status', whereIn: ['confirmed', 'pending'])
-            .get();
-        for (final doc in snap.docs) {
-          final m = doc.data();
-          final checkIn = (m['checkIn'] as Timestamp?)?.toDate() ??
-              (m['checkInDate'] as Timestamp?)?.toDate();
-          final checkOut = (m['checkOut'] as Timestamp?)?.toDate() ??
-              (m['checkOutDate'] as Timestamp?)?.toDate();
-          if (checkIn == null || checkOut == null) continue;
-          for (var d = checkIn;
-              d.isBefore(checkOut);
-              d = d.add(const Duration(days: 1))) {
-            unavailable.add(_dateKey(d));
-          }
+      // Booked dates come from a server function (it returns only date ranges).
+      final booked =
+          await BookingAvailabilityService.bookedRanges(widget.property.id);
+      for (final range in booked) {
+        for (var d = range.checkIn;
+            d.isBefore(range.checkOut);
+            d = d.add(const Duration(days: 1))) {
+          unavailable.add(_dateKey(d));
         }
       }
-
-      await Future.wait([
-        addBookingsFrom('bookings'),
-        addBookingsFrom('host_bookings'),
-      ]);
 
       final hostId = widget.property.hostUserId?.trim();
       if (hostId != null && hostId.isNotEmpty) {

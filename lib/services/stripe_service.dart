@@ -9,6 +9,7 @@ import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/property_model.dart';
+import 'booking_availability_service.dart';
 
 /// Mirrors iOS `StripeService` + the booking-request flow in
 /// `AirbnbPropertyDetailView.swift`.
@@ -60,17 +61,10 @@ class StripeService {
     // Server rules still reject double-bookings; this is a UX pre-check.
     bool hasOverlap = false;
     try {
-      final overlapSnap = await db
-          .collection('host_bookings')
-          .where('propertyId', isEqualTo: property.id)
-          .where('status', whereIn: ['pending', 'confirmed'])
-          .get();
-      for (final doc in overlapSnap.docs) {
-        final d = doc.data();
-        final existingIn = (d['checkInDate'] as Timestamp?)?.toDate();
-        final existingOut = (d['checkOutDate'] as Timestamp?)?.toDate();
-        if (existingIn == null || existingOut == null) continue;
-        if (checkIn.isBefore(existingOut) && existingIn.isBefore(checkOut)) {
+      // Booked dates come from a server function (it returns only date ranges).
+      final booked = await BookingAvailabilityService.bookedRanges(property.id);
+      for (final range in booked) {
+        if (checkIn.isBefore(range.checkOut) && range.checkIn.isBefore(checkOut)) {
           hasOverlap = true;
           break;
         }
