@@ -13,28 +13,22 @@ class PulseFinderRefinementParser {
   PulseFinderRefinementParser._();
 
   static PropertyFilter? tryParse(String text, PropertyFilter current) {
-    final lower = text.trim().toLowerCase();
+    final lower = _normalize(text);
     if (lower.isEmpty) return null;
+
+    // Digits mean the user stated a concrete figure ("cheaper than 30
+    // million", "any prices under 40M") — that needs real interpretation by
+    // the AI fallback, never a blind "clear budget" / "20% cheaper" rule.
+    final hasNumber = RegExp(r'\d').hasMatch(lower);
 
     // "Clear the budget" is a distinct intent from "cheaper" — the AI
     // search parser has no way to express "remove this constraint" (it
-    // only ever extracts NEW constraints from text), so this can only ever
-    // be handled deterministically. Without this rule, a request like "not
-    // regarding any budget" would silently fall through to the AI fallback,
-    // which would leave the old maxPrice untouched since nothing in the
-    // re-parsed text overrides it in mergeRefinement.
-    if (_matchesAny(lower, const [
-      'no budget',
-      'any budget',
-      'without a budget',
-      'not regarding any budget',
-      'regardless of budget',
-      'remove the budget',
-      'ignore the budget',
-      'no price limit',
-      'any price',
-      'no limit on price',
-    ])) {
+    // only ever extracts NEW constraints from text), so this can only
+    // ever be handled deterministically. Without this rule, a request like
+    // "not regarding any budget" would silently fall through to the AI
+    // fallback, which would leave the old maxPrice untouched since nothing
+    // in the re-parsed text overrides it in mergeRefinement.
+    if (!hasNumber && _clearBudget.hasMatch(lower)) {
       return current.copyWith(
         clearMinPrice: true,
         clearMaxPrice: true,
@@ -42,13 +36,7 @@ class PulseFinderRefinementParser {
       );
     }
 
-    if (_matchesAny(lower, const [
-      'cheaper',
-      'lower price',
-      'less expensive',
-      'reduce the price',
-      'more affordable',
-    ])) {
+    if (!hasNumber && _cheaper.hasMatch(lower)) {
       // Only meaningful if there's a cap to lower — otherwise this needs
       // real interpretation (what counts as "cheaper" with no cap set?).
       if (current.maxPrice != null && current.maxPrice! > 0) {
@@ -57,13 +45,9 @@ class PulseFinderRefinementParser {
       return null;
     }
 
-    if (_matchesAny(lower, const [
-      'only pools',
-      'with a pool',
-      'must have a pool',
-      'has a pool',
-      'properties with pools',
-    ])) {
+    // A negated mention ("I don't need a pool", "no pool") must never read
+    // as a request FOR one.
+    if (_wantsPool.hasMatch(lower) && !_negation.hasMatch(lower)) {
       return current.copyWith(hasPool: true);
     }
 
@@ -76,7 +60,7 @@ class PulseFinderRefinementParser {
     // profile-level context this function — which only ever sees a bare
     // `PropertyFilter` — doesn't have.
 
-    if (_matchesAny(lower, const ['newer homes', 'newer properties', 'more recent', 'newest first'])) {
+    if (_newest.hasMatch(lower)) {
       return current.copyWith(sortBy: 'date_newest');
     }
 
@@ -91,12 +75,28 @@ class PulseFinderRefinementParser {
   /// `propertyTypeRefinement`, or both — see
   /// `PulseFinderSearchProfile.tryRemovePropertyType`.
   static String? matchRemovePropertyType(String text) {
-    final lower = text.trim().toLowerCase();
+    final lower = _normalize(text);
     if (lower.isEmpty) return null;
-    if (_matchesAny(lower, const ['remove apartments', 'no apartments', 'not apartments'])) {
-      return 'apartment';
+    final match = _removeType.firstMatch(lower);
+    if (match == null) return null;
+    final word = match.group(1) ?? match.group(2) ?? match.group(3);
+    return word == null ? null : _canonicalType(word);
+  }
+
+  static String _canonicalType(String word) {
+    const prefixes = {
+      'apartment': 'apartment',
+      'flat': 'apartment',
+      'condo': 'condo',
+      'town': 'townhouse',
+      'villa': 'villa',
+      'studio': 'studio',
+      'land': 'land',
+    };
+    for (final entry in prefixes.entries) {
+      if (word.startsWith(entry.key)) return entry.value;
     }
-    return null;
+    return 'house';
   }
 
   /// Merges a freshly AI-parsed filter (produced by re-interpreting a single
@@ -113,7 +113,8 @@ class PulseFinderRefinementParser {
   /// job), never a blind filter-field copy, which is exactly what used to
   /// let "Apartment" silently overwrite a locked short-stay intent's
   /// `propertyType: 'airbnb'`.
-  static PropertyFilter mergeRefinement(PropertyFilter current, PropertyFilter parsed) {
+  static PropertyFilter mergeRefinement(
+      PropertyFilter current, PropertyFilter parsed) {
     return current.copyWith(
       query: parsed.query.isNotEmpty ? parsed.query : null,
       listingType: parsed.listingType,
@@ -133,18 +134,69 @@ class PulseFinderRefinementParser {
     );
   }
 
-  // Word-boundary matching, not plain substring — mirrors
-  // PulseFinderIntentLock._containsWord / PulseFinderPropertyTypeDetector's
-  // identical helper, for the identical reason: plain `contains` risks
-  // false-positives on ordinary text that happens to embed a trigger
-  // phrase. Previously the lone holdout still using plain substring
-  // matching among Pulse Finder's three deterministic phrase-matchers.
-  static bool _matchesAny(String text, List<String> phrases) {
-    return phrases.any((phrase) => _containsPhrase(text, phrase));
-  }
+  /// Lowercases, folds curly apostrophes, drops punctuation and collapses
+  /// whitespace so "Ignore the budget!" / "ignore  the budget" /
+  /// "Don\u2019t need a pool." all reach the patterns below in one shape.
+  static String _normalize(String text) => text
+      .toLowerCase()
+      .replaceAll('\u2019', "'")
+      .replaceAll(RegExp(r"[^a-z0-9'\s]"), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 
-  static bool _containsPhrase(String text, String phrase) {
-    final pattern = RegExp('\\b${RegExp.escape(phrase)}\\b');
-    return pattern.hasMatch(text);
-  }
+  // Patterns, not exact phrase lists: a verb from a small set, optional
+  // filler words ("the", "my", "any"), then the thing — so "ignore budget",
+  // "ignore the budget" and "skip my budget" all match without enumerating
+  // every combination. Word-boundary anchored throughout (see
+  // PulseFinderIntentLock for why plain substring matching is unsafe).
+  static const String _articles = r"(?:(?:the|a|an|my|your|any|of|our|about|more|all)\s+)*";
+
+  static final RegExp _clearBudget = RegExp(
+    r"\b(?:no|any|without|ignore|ignoring|remove|removing|skip|forget|disregard|clear)\s+"
+    '$_articles'
+    r"(?:budget|price limit|price cap|price range|price|prices)\b"
+    r"|\bregardless of\s+(?:(?:the|my)\s+)?(?:budget|price)\b"
+    r"|\bnot regarding any budget\b"
+    r"|\bno limit on\s+(?:(?:the|my)\s+)?(?:price|budget)\b"
+    r"|\b(?:budget|price)\s+(?:doesn't|does not|isn't|is not|is no)\s+(?:matter|an issue|a concern|a factor|important|object)\b"
+    r"|\bmoney is no object\b",
+  );
+
+  static final RegExp _cheaper = RegExp(
+    r"\b(?:cheaper|less expensive|less costly|more affordable|more budget friendly)\b"
+    r"|\b(?:lower|reduce|decrease|cut|drop)\s+"
+    '$_articles'
+    r"(?:price|prices|cost|budget)\b"
+    r"|\bbring\s+(?:(?:the|my)\s+)?(?:price|prices|budget)\s+down\b",
+  );
+
+  static final RegExp _wantsPool = RegExp(
+    r"\bonly\s+(?:(?:the|a|with|properties|homes|ones|places)\s+)*(?:swimming\s+)?pools?\b"
+    r"|\b(?:with|has|have|having|need|needs|want|wants|include|includes|including|require|requires)\s+"
+    r"(?:(?:a|an|the|some|any|private|our own)\s+)*(?:swimming\s+)?pools?\b",
+  );
+
+  static final RegExp _negation =
+      RegExp(r"n't\b|\b(?:no|not|without|never|nothing)\b");
+
+  static final RegExp _newest = RegExp(
+    r"\b(?:newer|newest|latest|more recent|most recent)\s+(?:homes?|houses?|properties|listings?|options?|ones?|first|builds?)\b"
+    r"|\bnewest first\b"
+    r"|\bmore recent\b"
+    r"|\bsort(?:ed)? by (?:newest|date|recent)\b"
+    r"|\brecently (?:listed|added)\b",
+  );
+
+  static const String _typeWords =
+      r"(town ?houses?|apartments?|flats?|condos?|condominiums?|villas?|studios?|land|houses?)";
+
+  static final RegExp _removeType = RegExp(
+    r"\b(?:remove|removing|no|not|without|exclude|excluding|skip|ignore|drop|hide)\s+"
+    '$_articles$_typeWords'
+    r"\b|\b(?:don't|dont|do not)\s+(?:want|need|like)\s+"
+    '$_articles$_typeWords'
+    r"\b|\bnot interested in\s+"
+    '$_articles$_typeWords'
+    r"\b",
+  );
 }
