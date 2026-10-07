@@ -551,8 +551,6 @@ class UserProfileRepository {
   Future<void> updateListingUserTypeToRealtor(String userId) async {
     await _db.collection(AppConstants.usersCollection).doc(userId).set({
       'userType': ListingUserType.realtor.name,
-      'activeListingLimit':
-          ListingEntitlements.baseLimit(ListingUserType.realtor),
     }, SetOptions(merge: true));
   }
 
@@ -560,8 +558,6 @@ class UserProfileRepository {
   Future<void> updateListingUserTypeToOwner(String userId) async {
     await _db.collection(AppConstants.usersCollection).doc(userId).set({
       'userType': ListingUserType.owner.name,
-      'activeListingLimit':
-          ListingEntitlements.baseLimit(ListingUserType.owner),
     }, SetOptions(merge: true));
   }
 
@@ -603,7 +599,6 @@ class UserProfileRepository {
     batch.set(userRef, {
       'role': displayRole,
       'userType': entitlementsType.name,
-      'activeListingLimit': ListingEntitlements.baseLimit(entitlementsType),
       'requiredRoleSelected': true,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
