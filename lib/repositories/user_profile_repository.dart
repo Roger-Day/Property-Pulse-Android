@@ -1152,14 +1152,17 @@ class UserProfileRepository {
   // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> submitPropertyReport({
-    required String reporterUserId,
+    required String reporterId,
     required String propertyId,
     required String propertyTitle,
     required String reason,
     required String details,
   }) async {
     await _db.collection('property_reports').add({
-      'reporterUserId': reporterUserId,
+      // Must be `reporterId`: firestore-enhanced.rules only allows creating a
+      // property_reports doc when reporterId == the signed-in uid. This used
+      // to be `reporterUserId`, so every submitted report was rejected.
+      'reporterId': reporterId,
       'propertyId': propertyId,
       'propertyTitle': propertyTitle,
       'reason': reason,

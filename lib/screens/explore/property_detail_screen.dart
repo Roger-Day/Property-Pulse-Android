@@ -3707,7 +3707,7 @@ class _ReportListingSheetState extends State<_ReportListingSheet> {
     setState(() => _submitting = true);
     try {
       await context.read<UserProfileRepository>().submitPropertyReport(
-            reporterUserId: auth.user!.uid,
+            reporterId: auth.user!.uid,
             propertyId: widget.property.id,
             propertyTitle: widget.property.title,
             reason: _selectedReason!,
