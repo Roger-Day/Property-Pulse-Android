@@ -1,12 +1,11 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../repositories/property_repository.dart';
 import 'premium_boost_service.dart';
+import 'purchase_verification_service.dart';
 
 /// Google Play Billing for Premium + listing boosts using the **same product IDs**
 /// as iOS `SubscriptionService` / `PremiumBoostService` (StoreKit). Host stay
@@ -341,38 +340,23 @@ class InAppBillingService extends ChangeNotifier {
     }
   }
 
-  /// Writes `plan: "pro"` to `users/{uid}` — mirrors iOS
-  /// `SubscriptionService.syncBackendPlan(isActive: true)`. Without this,
-  /// the purchase only ever flips the in-memory [isPremium] flag: the
-  /// listing-limit Cloud Function (`listing-limit-functions.js`'s
-  /// `inferPlan`) and [ListingEntitlements.allowedActiveListingLimit] both
-  /// read `users.plan` from Firestore, so a subscriber's listing cap would
-  /// silently never actually increase, and the entitlement would vanish on
-  /// reinstall since nothing server-visible was ever set.
+  /// Asks the server to verify a subscription purchase with Google and set
+  /// the entitlement fields (`plan`, `developerSubscriptionTier`, the realtor /
+  /// owner / host tiers) on `users/{uid}`.
   ///
-  /// For [productId] a Developer Pro/Growth product, also writes
-  /// `developerSubscriptionTier` ("pro"/"growth") — the separate field
-  /// `developer-monetization-functions.js`'s `onDeveloperProjectCreated`
-  /// trigger reads to enforce the 5/20 project cap. Without this, a paying
-  /// developer stayed capped at the free tier's 1-project limit server-side
-  /// and had every subsequent (already-paid-for) project silently rejected.
-  Future<void> _syncBackendPlan(String productId) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+  /// These fields used to be written from here, which let any client grant
+  /// itself a paid plan. Returns whether the purchase may be acknowledged: a
+  /// temporary failure (store or network outage) leaves it unacknowledged so
+  /// Play Billing redelivers it on the next launch and it is verified then.
+  Future<bool> _verifySubscription(PurchaseDetails purchase) async {
     try {
-      final patch = <String, Object>{'plan': 'pro'};
-      if (productId == developerProMonthlyId) {
-        patch['developerSubscriptionTier'] = 'pro';
-      } else if (productId == developerGrowthMonthlyId) {
-        patch['developerSubscriptionTier'] = 'growth';
-      }
-      await FirebaseFirestore.instance.collection('users').doc(uid).set(
-        patch,
-        SetOptions(merge: true),
-      );
-    } catch (_) {
-      // Best-effort — same as iOS, which logs and continues rather than
-      // failing the purchase over a sync error.
+      await PurchaseVerificationService.verify(purchase);
+      return true;
+    } on PurchaseVerificationException catch (e) {
+      lastError = e.isTemporary
+          ? 'We could not confirm your purchase yet. It will be retried automatically.'
+          : 'This purchase could not be verified.';
+      return false;
     }
   }
 
@@ -427,24 +411,34 @@ class InAppBillingService extends ChangeNotifier {
 
         if (subscriptionProductIds.contains(id)) {
           purchasingSubscriptionProductId = null;
-          isPremium = true;
-          activeSubscriptionProductId = id;
-          await _syncBackendPlan(id);
-          await _iap.completePurchase(purchase);
+          final verified = await _verifySubscription(purchase);
+          if (verified) {
+            isPremium = true;
+            activeSubscriptionProductId = id;
+            await _iap.completePurchase(purchase);
+          }
+          // else: left unacknowledged on purpose - see _verifySubscription.
         } else if (boostProductIds.contains(id)) {
           final packCredits = PremiumBoostService.creditsForPackProduct(id);
           if (packCredits > 0) {
             // Boost-credit pack — not tied to a property, credits go to
             // the user's balance for later redemption.
+            // The server verifies the purchase with Google and adds the
+            // credits (once per purchase). Only a verified pack is consumed.
             try {
-              await PremiumBoostService.creditBoostPackPurchase(
-                transactionId: purchase.purchaseID ?? id,
-                credits: packCredits,
-              );
+              await PurchaseVerificationService.verify(purchase);
               await refreshBoostCredits();
               boostSuccessGeneration++;
+            } on PurchaseVerificationException catch (e) {
+              lastError = e.isTemporary
+                  ? 'We could not confirm your purchase yet. It will be retried automatically.'
+                  : 'This purchase could not be verified.';
+              notifyListeners();
+              continue;
             } catch (e) {
               lastError = e.toString();
+              notifyListeners();
+              continue;
             }
           } else {
             final propertyId = _pendingBoostPropertyId;

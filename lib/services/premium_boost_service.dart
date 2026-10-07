@@ -5,9 +5,10 @@ import '../repositories/property_repository.dart';
 
 /// Boost credits + activation — mirrors iOS `PremiumBoostService`: a
 /// `propertyBoosts` audit-trail collection (id, transactionId, start/end,
-/// isActive), an idempotent `boostCredits` ledger on `users/{uid}` guarded
-/// by `boostPackTransactions/{transactionId}`, and an ownership check before
-/// any boost is applied.
+/// isActive), a `boostCredits` balance on `users/{uid}`, and an ownership
+/// check before any boost is applied. Credits are ADDED only by the server's
+/// `verifyPurchase` function (after Google confirms a pack purchase) and by the
+/// referral trigger; this class only spends them.
 ///
 /// Note: the property-facing "is this listing boosted" flag is still the
 /// existing `isFeatured`/`featuredUntil` pair (not iOS's separate
@@ -18,7 +19,6 @@ class PremiumBoostService {
   PremiumBoostService._();
 
   static const _boostCreditsField = 'boostCredits';
-  static const _boostPackTransactionsCollection = 'boostPackTransactions';
   static const _propertyBoostsCollection = 'propertyBoosts';
 
   static FirebaseFirestore get _db => FirebaseFirestore.instance;
@@ -42,58 +42,6 @@ class PremiumBoostService {
     if (uid == null) return 0;
     final doc = await _db.collection('users').doc(uid).get();
     return (doc.data()?[_boostCreditsField] as num?)?.toInt() ?? 0;
-  }
-
-  /// Awards 1 boost credit to [userId] as a referral reward. Idempotent —
-  /// uses `referral-{code}` as the transaction id, same as iOS.
-  static Future<void> awardReferralCredit({
-    required String userId,
-    required String referralCode,
-  }) {
-    return _addBoostCredits(
-      transactionId: 'referral-$referralCode',
-      creditsToAdd: 1,
-      userId: userId,
-    );
-  }
-
-  /// Records a boost-pack purchase once Play/StoreKit confirms the
-  /// transaction — call this from the purchase-update listener instead of
-  /// applying a boost directly (packs aren't tied to a property).
-  static Future<void> creditBoostPackPurchase({
-    required String transactionId,
-    required int credits,
-  }) async {
-    final uid = _uid;
-    if (uid == null || credits <= 0) return;
-    await _addBoostCredits(
-      transactionId: transactionId,
-      creditsToAdd: credits,
-      userId: uid,
-    );
-  }
-
-  static Future<void> _addBoostCredits({
-    required String transactionId,
-    required int creditsToAdd,
-    required String userId,
-  }) async {
-    final packRef =
-        _db.collection(_boostPackTransactionsCollection).doc(transactionId);
-    final userRef = _db.collection('users').doc(userId);
-    await _db.runTransaction((tx) async {
-      final packDoc = await tx.get(packRef);
-      if (packDoc.exists) return; // Already processed — idempotent.
-      final userDoc = await tx.get(userRef);
-      final current =
-          (userDoc.data()?[_boostCreditsField] as num?)?.toInt() ?? 0;
-      tx.set(packRef, {
-        'userId': userId,
-        'processedAt': FieldValue.serverTimestamp(),
-      });
-      tx.set(userRef, {_boostCreditsField: current + creditsToAdd},
-          SetOptions(merge: true));
-    });
   }
 
   /// Direct single-duration boost purchase (not from a credit) — mirrors
