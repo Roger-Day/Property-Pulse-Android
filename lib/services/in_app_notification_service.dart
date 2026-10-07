@@ -40,7 +40,9 @@ class InAppNotificationService {
   /// this codebase), so both casings are queried and unioned rather than a
   /// single exact-match query that would silently miss half the admins.
   static Future<List<String>> allAdminUserIds() async {
-    final col = FirebaseFirestore.instance.collection(AppConstants.usersCollection);
+    // `user_public` mirrors every user's role; listing `users` is admin-only.
+    final col = FirebaseFirestore.instance
+        .collection(AppConstants.userPublicCollection);
     final results = await Future.wait([
       col.where('role', isEqualTo: 'Admin').get(),
       col.where('role', isEqualTo: 'admin').get(),
