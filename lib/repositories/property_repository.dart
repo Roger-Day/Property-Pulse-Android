@@ -1022,6 +1022,10 @@ class PropertyRepository {
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   /// Toggle saved state. Returns the new saved state.
+  ///
+  /// Also writes the listing's per-user `saves/{uid}` document, from which
+  /// the server derives `totalSaves` (onPropertySaveWritten). Android never
+  /// counted saves before; the counter was only ever bumped by iOS.
   Future<bool> toggleSaved({
     required String userId,
     required PropertyModel property,
@@ -1031,19 +1035,31 @@ class PropertyRepository {
         .doc(userId)
         .collection('savedProperties')
         .doc(property.id);
+    final saveRef = _db
+        .collection(AppConstants.propertiesCollection)
+        .doc(property.id)
+        .collection('saves')
+        .doc(userId);
 
     final snap = await ref.get();
+    final batch = _db.batch();
     if (snap.exists) {
-      await ref.delete();
+      batch.delete(ref);
+      batch.delete(saveRef);
+      await batch.commit();
       return false;
-    } else {
-      await ref.set({
-        'savedAt': FieldValue.serverTimestamp(),
-        'title': property.title,
-        'heroImageUrl': property.heroImageUrl,
-      });
-      return true;
     }
+    batch.set(ref, {
+      'savedAt': FieldValue.serverTimestamp(),
+      'title': property.title,
+      'heroImageUrl': property.heroImageUrl,
+    });
+    batch.set(saveRef, {
+      'userId': userId,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    return true;
   }
 
   /// Save a private note on a saved property — stored on the savedProperties subdoc.
@@ -1085,6 +1101,17 @@ class PropertyRepository {
         .collection('savedProperties')
         .doc(propertyId)
         .delete();
+    // Keep the server-derived totalSaves right. Best effort: the listing doc
+    // may be gone (that is why this is called), in which case there is
+    // nothing left to count.
+    try {
+      await _db
+          .collection(AppConstants.propertiesCollection)
+          .doc(propertyId)
+          .collection('saves')
+          .doc(userId)
+          .delete();
+    } catch (_) {}
   }
 
   /// Returns a set of saved property IDs for [userId].
@@ -1116,7 +1143,13 @@ class PropertyRepository {
     });
   }
 
-  /// Toggle like — updates user `likedProperties` and property `totalLikes` (iOS transaction).
+  /// Toggle like — updates the user's `likedProperties` list and the
+  /// listing's per-user `likes/{uid}` document in one transaction.
+  ///
+  /// `totalLikes` is deliberately NOT written here: it is derived server-side
+  /// from the likes subcollection (onPropertyLikeWritten), and the Firestore
+  /// rules no longer let clients write it (they used to, which let anyone set
+  /// any listing's like count to any number).
   Future<void> toggleLike({
     required String userId,
     required PropertyModel property,
@@ -1127,10 +1160,10 @@ class PropertyRepository {
     final userRef = _db.collection(AppConstants.usersCollection).doc(uid);
     final propertyRef =
         _db.collection(AppConstants.propertiesCollection).doc(property.id);
+    final likeRef = propertyRef.collection('likes').doc(uid);
 
     await _db.runTransaction((tx) async {
       final userSnap = await tx.get(userRef);
-      final propSnap = await tx.get(propertyRef);
 
       var liked = <String>[];
       if (userSnap.exists && userSnap.data() != null) {
@@ -1151,11 +1184,6 @@ class PropertyRepository {
         liked = [...liked, docId];
       }
 
-      final currentTotal =
-          (propSnap.data()?['totalLikes'] as num?)?.toInt() ?? 0;
-      final newTotal =
-          newLiked ? currentTotal + 1 : (currentTotal - 1).clamp(0, 0x7fffffff);
-
       tx.set(
         userRef,
         {
@@ -1164,14 +1192,14 @@ class PropertyRepository {
         },
         SetOptions(merge: true),
       );
-      tx.set(
-        propertyRef,
-        {
-          'totalLikes': newTotal,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+      if (newLiked) {
+        tx.set(likeRef, {
+          'userId': uid,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } else {
+        tx.delete(likeRef);
+      }
     });
   }
 
