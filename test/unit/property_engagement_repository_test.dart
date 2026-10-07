@@ -84,14 +84,20 @@ void main() {
   });
 
   group('toggleSaved', () {
-    test('saving writes the user entry and the listing-side saves document', () async {
+    test('saving writes the shared user-document array and the listing-side saves document', () async {
       final saved = await repo.toggleSaved(userId: 'u1', property: _prop('p1'));
 
       expect(saved, isTrue);
-      expect((await db.collection('users/u1/savedProperties').doc('p1').get()).exists, isTrue);
+      final user = (await db.collection('users').doc('u1').get()).data()!;
+      expect(user['savedProperties'], ['p1']);
       final save = await db.collection('properties/p1/saves').doc('u1').get();
       expect(save.exists, isTrue);
       expect(save.data()!['userId'], 'u1');
+    });
+
+    test('it no longer writes the old per-user subcollection document', () async {
+      await repo.toggleSaved(userId: 'u1', property: _prop('p1'));
+      expect((await db.collection('users/u1/savedProperties').doc('p1').get()).exists, isFalse);
     });
 
     test('it never writes totalSaves on the listing', () async {
@@ -99,19 +105,23 @@ void main() {
       expect((await property())['totalSaves'], 2);
     });
 
-    test('un-saving removes both documents', () async {
+    test('un-saving removes the array entry and the saves document', () async {
       await repo.toggleSaved(userId: 'u1', property: _prop('p1'));
       final saved = await repo.toggleSaved(userId: 'u1', property: _prop('p1'));
 
       expect(saved, isFalse);
-      expect((await db.collection('users/u1/savedProperties').doc('p1').get()).exists, isFalse);
+      final user = (await db.collection('users').doc('u1').get()).data()!;
+      expect(user['savedProperties'], isEmpty);
       expect((await db.collection('properties/p1/saves').doc('u1').get()).exists, isFalse);
     });
 
-    test('removeSavedById also drops the saves document', () async {
+    test('removeSavedById drops the array entry, legacy document and saves document', () async {
       await repo.toggleSaved(userId: 'u1', property: _prop('p1'));
+      await db.collection('users/u1/savedProperties').doc('p1').set({'note': 'x'});
       await repo.removeSavedById(userId: 'u1', propertyId: 'p1');
 
+      final user = (await db.collection('users').doc('u1').get()).data()!;
+      expect(user['savedProperties'], isEmpty);
       expect((await db.collection('users/u1/savedProperties').doc('p1').get()).exists, isFalse);
       expect((await db.collection('properties/p1/saves').doc('u1').get()).exists, isFalse);
     });

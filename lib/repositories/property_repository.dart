@@ -745,16 +745,17 @@ class PropertyRepository {
     });
   }
 
-  /// All properties saved (favourited) by [userId].
+  /// All properties saved (favourited) by [userId]. Reads the same
+  /// `savedProperties` array on the user document that iOS writes, so a
+  /// listing saved on either platform shows up on both.
   Stream<List<PropertyModel>> watchSavedListings(String userId) {
     return _db
         .collection(AppConstants.usersCollection)
         .doc(userId)
-        .collection('savedProperties')
         .snapshots()
-        .asyncMap((savedSnap) async {
-      if (savedSnap.docs.isEmpty) return <PropertyModel>[];
-      final ids = savedSnap.docs.map((d) => d.id).toList();
+        .asyncMap((userSnap) async {
+      final ids = _savedIdsFromUserData(userSnap.data());
+      if (ids.isEmpty) return <PropertyModel>[];
       // Firestore whereIn supports up to 30 items.
       final chunks = <List<String>>[];
       for (var i = 0; i < ids.length; i += 30) {
@@ -1032,45 +1033,112 @@ class PropertyRepository {
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
+  /// The listing ids in a user document's `savedProperties` array (the
+  /// storage iOS uses; `saved_properties` is the legacy spelling).
+  static List<String> _savedIdsFromUserData(Map<String, dynamic>? data) {
+    final raw = data?['savedProperties'] ?? data?['saved_properties'];
+    if (raw is! List) return const [];
+    return raw.map((e) => '$e').where((s) => s.isNotEmpty).toList();
+  }
+
   /// Toggle saved state. Returns the new saved state.
   ///
-  /// Also writes the listing's per-user `saves/{uid}` document, from which
-  /// the server derives `totalSaves` (onPropertySaveWritten). Android never
-  /// counted saves before; the counter was only ever bumped by iOS.
+  /// Saves live in the `savedProperties` array on the user document, the same
+  /// place iOS keeps them (Android used to keep a separate subcollection, so
+  /// a save on one platform never showed on the other and the server's
+  /// price-drop job, which reads the array, never saw Android saves). Also
+  /// writes the listing's per-user `saves/{uid}` document, from which the
+  /// server derives `totalSaves` (onPropertySaveWritten). Un-saving removes
+  /// the legacy subcollection document too, so it can't be migrated back.
   Future<bool> toggleSaved({
     required String userId,
     required PropertyModel property,
   }) async {
-    final ref = _db
-        .collection(AppConstants.usersCollection)
-        .doc(userId)
-        .collection('savedProperties')
-        .doc(property.id);
-    final saveRef = _db
-        .collection(AppConstants.propertiesCollection)
-        .doc(property.id)
-        .collection('saves')
-        .doc(userId);
+    final userRef = _db.collection(AppConstants.usersCollection).doc(userId);
+    final propertyRef =
+        _db.collection(AppConstants.propertiesCollection).doc(property.id);
+    final saveRef = propertyRef.collection('saves').doc(userId);
+    final legacyRef = userRef.collection('savedProperties').doc(property.id);
 
-    final snap = await ref.get();
-    final batch = _db.batch();
-    if (snap.exists) {
-      batch.delete(ref);
-      batch.delete(saveRef);
-      await batch.commit();
-      return false;
+    var nowSaved = false;
+    await _db.runTransaction((tx) async {
+      final userSnap = await tx.get(userRef);
+      var saved = _savedIdsFromUserData(userSnap.data());
+
+      final docId = property.id;
+      final currently = saved.contains(docId);
+      nowSaved = !currently;
+
+      saved = currently
+          ? saved.where((id) => id != docId).toList()
+          : [...saved, docId];
+
+      tx.set(
+        userRef,
+        {
+          'savedProperties': saved,
+          if (!userSnap.exists) 'createdAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      if (nowSaved) {
+        tx.set(saveRef, {
+          'userId': userId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } else {
+        tx.delete(saveRef);
+        tx.delete(legacyRef);
+      }
+    });
+    return nowSaved;
+  }
+
+  /// One-time move of saves made before the array became the source of truth
+  /// (documents under `users/{uid}/savedProperties` that still carry the old
+  /// `savedAt` marker) into the `savedProperties` array. Each migrated
+  /// document loses its marker but keeps its private note, so running this
+  /// again finds nothing, and a later un-save can't resurrect it.
+  /// Returns how many saves were moved.
+  Future<int> migrateLegacySavedToArray(String userId) async {
+    final uid = userId.trim();
+    if (uid.isEmpty) return 0;
+
+    final userRef = _db.collection(AppConstants.usersCollection).doc(uid);
+    final legacy = await userRef.collection('savedProperties').get();
+    final legacyIds = legacy.docs
+        .where((d) => d.data()['savedAt'] != null)
+        .map((d) => d.id)
+        .toList();
+    if (legacyIds.isEmpty) return 0;
+
+    final userSnap = await userRef.get();
+    final existing = _savedIdsFromUserData(userSnap.data()).toSet();
+    final missing = legacyIds.where((id) => !existing.contains(id)).toList();
+
+    if (missing.isNotEmpty) {
+      await userRef.set(
+        {'savedProperties': FieldValue.arrayUnion(missing)},
+        SetOptions(merge: true),
+      );
     }
-    batch.set(ref, {
-      'savedAt': FieldValue.serverTimestamp(),
-      'title': property.title,
-      'heroImageUrl': property.heroImageUrl,
-    });
-    batch.set(saveRef, {
-      'userId': userId,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    return true;
+    for (final id in legacyIds) {
+      await userRef
+          .collection('savedProperties')
+          .doc(id)
+          .update({'savedAt': FieldValue.delete()});
+      // Count the migrated save. Best effort per listing: the document may
+      // refer to a listing that no longer exists.
+      try {
+        await _db
+            .collection(AppConstants.propertiesCollection)
+            .doc(id)
+            .collection('saves')
+            .doc(uid)
+            .set({'userId': uid, 'createdAt': FieldValue.serverTimestamp()});
+      } catch (_) {}
+    }
+    return legacyIds.length;
   }
 
   /// Save a private note on a saved property — stored on the savedProperties subdoc.
@@ -1106,6 +1174,14 @@ class PropertyRepository {
     required String userId,
     required String propertyId,
   }) async {
+    try {
+      await _db.collection(AppConstants.usersCollection).doc(userId).update({
+        'savedProperties': FieldValue.arrayRemove([propertyId]),
+      });
+    } catch (_) {
+      // No user document yet means nothing was saved in the array.
+    }
+    // The legacy subcollection document (and its private note).
     await _db
         .collection(AppConstants.usersCollection)
         .doc(userId)
@@ -1125,14 +1201,16 @@ class PropertyRepository {
     } catch (_) {}
   }
 
-  /// Returns a set of saved property IDs for [userId].
+  /// Returns a set of saved property IDs for [userId] — the `savedProperties`
+  /// array on the user document, shared with iOS.
   Stream<Set<String>> watchSavedIds(String userId) {
+    final trimmed = userId.trim();
+    if (trimmed.isEmpty) return Stream.value(<String>{});
     return _db
         .collection(AppConstants.usersCollection)
-        .doc(userId)
-        .collection('savedProperties')
+        .doc(trimmed)
         .snapshots()
-        .map((snap) => snap.docs.map((d) => d.id).toSet());
+        .map((snap) => _savedIdsFromUserData(snap.data()).toSet());
   }
 
   /// iOS `users/{uid}.likedProperties` array on the user document.

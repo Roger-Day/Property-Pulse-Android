@@ -50,6 +50,8 @@ class SavedProvider extends ChangeNotifier {
       return;
     }
 
+    unawaited(_migrateLegacySaves(uid));
+
     _subscription = _repo.watchSavedIds(uid).listen(
       (ids) {
         _savedIds = ids;
@@ -61,6 +63,18 @@ class SavedProvider extends ChangeNotifier {
         notifyListeners();
       },
     );
+  }
+
+  /// Saves made before the shared array existed live in the old Android
+  /// subcollection; fold them into the array once per user per session.
+  /// Best effort and silent: nothing here may affect the saved list.
+  String? _migratedFor;
+  Future<void> _migrateLegacySaves(String uid) async {
+    if (_migratedFor == uid) return;
+    _migratedFor = uid;
+    try {
+      await _repo.migrateLegacySavedToArray(uid);
+    } catch (_) {}
   }
 
   // ── Toggle ────────────────────────────────────────────────────────────────
