@@ -1,0 +1,28 @@
+# Static analysis (errors only - the project still has a long tail of lint notes) and the unit/widget tests.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flutter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.41.6
+          cache: true
+      - run: flutter pub get
+      - name: Analyze (fail on errors only)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Tests
+        run: flutter test
