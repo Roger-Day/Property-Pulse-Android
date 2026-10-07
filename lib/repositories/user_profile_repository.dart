@@ -1215,7 +1215,8 @@ class UserProfileRepository {
   /// Throws a [StateError] if [review.userId] already has a review on
   /// [review.propertyId] — without this, nothing (client or server) stopped
   /// a user submitting unlimited reviews for the same listing, each one
-  /// skewing its public average rating in [_updatePropertyRatingStats].
+  /// skewing its public average rating (computed server-side by the
+  /// `onReviewWritten` Cloud Function).
   Future<void> addReview(ReviewModel review) async {
     final existing = await _db
         .collection(AppConstants.reviewsCollection)
@@ -1229,51 +1230,9 @@ class UserProfileRepository {
     // Store the real doc id in the `id` field (the security rules require it).
     final ref = _db.collection(AppConstants.reviewsCollection).doc();
     await ref.set({...review.toFirestore(), 'id': ref.id});
-    await _updatePropertyRatingStats(review.propertyId);
-  }
-
-  /// Recomputes `averageRating`/`totalReviews`/`lastReviewDate` on the
-  /// property document after a review is added — mirrors iOS
-  /// `ReviewViewModel.updatePropertyRating`/`updatePropertyReviewStats`,
-  /// which keep the star rating shown on property cards/search/home in sync
-  /// with the property's actual reviews. Best-effort: a failure here must
-  /// not surface as a failure of the review submission itself.
-  Future<void> _updatePropertyRatingStats(String propertyId) async {
-    try {
-      final reviewsSnap = await _db
-          .collection(AppConstants.reviewsCollection)
-          .where('propertyId', isEqualTo: propertyId)
-          .get();
-      if (reviewsSnap.docs.isEmpty) return;
-
-      var ratingSum = 0;
-      DateTime? lastReviewDate;
-      for (final doc in reviewsSnap.docs) {
-        final data = doc.data();
-        ratingSum += (data['rating'] as num?)?.toInt() ?? 0;
-        final date = data['date'];
-        if (date is Timestamp) {
-          final d = date.toDate();
-          if (lastReviewDate == null || d.isAfter(lastReviewDate)) {
-            lastReviewDate = d;
-          }
-        }
-      }
-      final averageRating = ratingSum / reviewsSnap.docs.length;
-
-      await _db
-          .collection(AppConstants.propertiesCollection)
-          .doc(propertyId)
-          .update({
-        'averageRating': averageRating,
-        'totalReviews': reviewsSnap.docs.length,
-        if (lastReviewDate != null)
-          'lastReviewDate': Timestamp.fromDate(lastReviewDate),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } catch (_) {
-      // Best-effort — see doc comment above.
-    }
+    // The listing's averageRating / totalReviews / lastReviewDate are
+    // recomputed server-side by the onReviewWritten Cloud Function; clients
+    // can no longer write them (firestore-enhanced.rules).
   }
 
   // ── Data export (iOS `UserProfileService.exportUserData`) ─────────────────
