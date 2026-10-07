@@ -335,13 +335,24 @@ class PropertyRepository {
 
   /// Airbnb-style short-stay listings — listingType == 'airbnb'.
   Stream<List<PropertyModel>> watchAirbnbListings() {
+    // Same definition iOS uses for the home "Short Stays" section
+    // (`Property.isShortStayHostListing`): listing type short_stay OR the
+    // legacy airbnb value, OR propertyType airbnb. This used to match only
+    // `listingType == 'airbnb'`, which is what the Android wizard writes; the
+    // iOS wizard writes `short_stay`, so every iOS-created short stay was
+    // missing from the home strip (and the strip hides itself when empty).
     // No server-side `deleted` filter — see _baseQuery()'s comment.
     return _db
         .collection(AppConstants.propertiesCollection)
-        .where('listingType', isEqualTo: 'airbnb')
+        .where(Filter.or(
+          Filter('listingType', whereIn: ['airbnb', 'short_stay']),
+          Filter('propertyType', isEqualTo: 'airbnb'),
+        ))
         .limit(50)
         .snapshots()
-        .map(_mapSnapshot);
+        .map(
+          (snap) => _mapSnapshot(snap).where((p) => p.isShortStayHostListing).toList(),
+        );
   }
 
   /// Homes near the user — uses a **wide pool** of listings then filters by city/state.

@@ -262,6 +262,33 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
 
+                // ── Airbnb Short Stays (iOS AirbnbStaysSection) ─────────
+                // Placed right after New Developments and before Most Viewed,
+                // matching the iOS home order.
+                SliverToBoxAdapter(
+                  child: StreamBuilder<List<PropertyModel>>(
+                    stream: _airbnbStream,
+                    builder: (context, airbnbSnap) {
+                      final airbnbProps = airbnbSnap.data ?? [];
+                      if (airbnbProps.isEmpty) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
+                        child: _AirbnbStaysSection(
+                          properties: airbnbProps,
+                          onSeeAll: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const HomeSeeAllScreen(
+                                destination:
+                                    HomeSeeAllDestination.airbnbStays,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+
                 // ── Most Viewed ───────────────────────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
@@ -336,31 +363,6 @@ class _HomeScreenState extends State<HomeScreen>
                   child: _HorizontalSection(
                     properties: recent,
                     emptyMessage: 'New listings will show up here soon.',
-                  ),
-                ),
-
-                // ── Airbnb Short Stays (iOS AirbnbStaysSection) ─────────
-                SliverToBoxAdapter(
-                  child: StreamBuilder<List<PropertyModel>>(
-                    stream: _airbnbStream,
-                    builder: (context, airbnbSnap) {
-                      final airbnbProps = airbnbSnap.data ?? [];
-                      if (airbnbProps.isEmpty) return const SizedBox.shrink();
-                      return Padding(
-                        padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
-                        child: _AirbnbStaysSection(
-                          properties: airbnbProps,
-                          onSeeAll: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const HomeSeeAllScreen(
-                                destination:
-                                    HomeSeeAllDestination.airbnbStays,
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
                   ),
                 ),
 
