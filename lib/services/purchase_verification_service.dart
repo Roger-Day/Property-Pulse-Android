@@ -49,22 +49,28 @@ class PurchaseVerificationService {
     return Map<String, dynamic>.from(result.data);
   }
 
-  static Future<PurchaseVerification> verify(PurchaseDetails purchase) {
+  /// [propertyId] is for a purchased listing boost: the server applies it to
+  /// that listing (once per purchase).
+  static Future<PurchaseVerification> verify(PurchaseDetails purchase,
+      {String? propertyId}) {
     return verifyToken(
       productId: purchase.productID,
       purchaseToken: purchase.verificationData.serverVerificationData,
+      propertyId: propertyId,
     );
   }
 
   static Future<PurchaseVerification> verifyToken({
     required String productId,
     required String purchaseToken,
+    String? propertyId,
   }) async {
     try {
       final data = await callVerify({
         'platform': 'google',
         'productId': productId,
         'purchaseToken': purchaseToken,
+        if (propertyId != null) 'propertyId': propertyId,
       });
       return PurchaseVerification(
         status: (data['status'] as String?) ?? 'verified',

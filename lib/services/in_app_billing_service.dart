@@ -11,9 +11,11 @@ import 'purchase_verification_service.dart';
 /// as iOS `SubscriptionService` / `PremiumBoostService` (StoreKit). Host stay
 /// payments use Stripe via Cloud Functions — not this service.
 class InAppBillingService extends ChangeNotifier {
-  InAppBillingService(this._propertyRepository);
+  /// The repository argument is kept so existing call sites compile; boosts are
+  /// now applied by the server, so this service no longer writes listings.
+  // ignore: avoid_unused_constructor_parameters
+  InAppBillingService(PropertyRepository propertyRepository);
 
-  final PropertyRepository _propertyRepository;
 
   static const monthlyProductId = 'com.propertypulse.premium.monthly';
   static const yearlyProductId = 'com.propertypulse.premium.yearly';
@@ -297,18 +299,11 @@ class InAppBillingService extends ChangeNotifier {
     await _iap.buyConsumable(purchaseParam: param);
   }
 
-  /// Spends one boost credit on [propertyId] for [days] — no store purchase
-  /// involved, the credit was already paid for via a pack.
-  Future<void> redeemBoostCredit({
-    required String propertyId,
-    required int days,
-  }) async {
+  /// Spends one boost credit on [propertyId] (7 days) - no store purchase
+  /// involved, the credit was already paid for via a pack. The server applies it.
+  Future<void> redeemBoostCredit({required String propertyId}) async {
     lastError = null;
-    await PremiumBoostService.applyBoostCredit(
-      repository: _propertyRepository,
-      propertyId: propertyId,
-      days: days,
-    );
+    await PremiumBoostService.applyBoostCredit(propertyId: propertyId);
     await refreshBoostCredits();
     boostSuccessGeneration++;
     notifyListeners();
@@ -444,18 +439,21 @@ class InAppBillingService extends ChangeNotifier {
             final propertyId = _pendingBoostPropertyId;
             _pendingBoostPropertyId = null;
             if (propertyId != null) {
+              // The server verifies the purchase with Google and boosts the listing.
               try {
-                final days = daysForBoostProduct(id);
-                await PremiumBoostService.activateBoost(
-                  repository: _propertyRepository,
-                  propertyId: propertyId,
-                  productId: id,
-                  days: days,
-                  transactionId: purchase.purchaseID ?? id,
-                );
+                await PurchaseVerificationService.verify(purchase,
+                    propertyId: propertyId);
                 boostSuccessGeneration++;
+              } on PurchaseVerificationException catch (e) {
+                lastError = e.isTemporary
+                    ? 'We could not confirm your purchase yet. It will be retried automatically.'
+                    : 'This purchase could not be verified.';
+                notifyListeners();
+                continue;
               } catch (e) {
                 lastError = e.toString();
+                notifyListeners();
+                continue;
               }
             }
           }

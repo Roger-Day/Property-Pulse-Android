@@ -52,4 +52,29 @@ void main() {
           .having((e) => e.isTemporary, 'isTemporary', true)),
     );
   });
+
+  test('a purchased boost names the listing it is for', () async {
+    Map<String, dynamic>? sent;
+    PurchaseVerificationService.callVerify = (payload) async {
+      sent = payload;
+      return {'status': 'granted', 'kind': 'listing_boost'};
+    };
+    await PurchaseVerificationService.verifyToken(
+      productId: 'com.propertypulse.boost.7days',
+      purchaseToken: 'token-123456789',
+      propertyId: 'listing-1',
+    );
+    expect(sent!['propertyId'], 'listing-1');
+  });
+
+  test('propertyId is omitted when the purchase is not a boost', () async {
+    Map<String, dynamic>? sent;
+    PurchaseVerificationService.callVerify = (payload) async {
+      sent = payload;
+      return {'status': 'granted', 'kind': 'credit_pack'};
+    };
+    await PurchaseVerificationService.verifyToken(
+        productId: 'p', purchaseToken: 'token-123456789');
+    expect(sent!.containsKey('propertyId'), isFalse);
+  });
 }

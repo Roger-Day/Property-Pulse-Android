@@ -1505,8 +1505,7 @@ class PropertyRepository {
         .doc(property.id)
         .update({
       'status': 'available',
-      'isFeatured': false,
-      'featuredUntil': FieldValue.delete(),
+      // Featured/boost fields are server-owned and left untouched here.
       // Mirror iOS ListingExpirationViewModel.renewListing — set new expiry date
       // so the listing is visible again immediately without waiting for Cloud Function.
       if (newExpiry != null) 'expirationDate': Timestamp.fromDate(newExpiry),
@@ -1528,15 +1527,6 @@ class PropertyRepository {
     } catch (_) {
       // Best-effort — silently ignore if caller doesn't have write permission
     }
-  }
-
-  /// Boosts a listing as featured until [until].
-  Future<void> boostListing(String id, DateTime until) async {
-    await _db.collection(AppConstants.propertiesCollection).doc(id).update({
-      'isFeatured': true,
-      'featuredUntil': Timestamp.fromDate(until),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
   }
 
   // ── Host Bookings ─────────────────────────────────────────────────────────

@@ -1,14 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
-import '../repositories/property_repository.dart';
 
 /// Boost credits + activation — mirrors iOS `PremiumBoostService`: a
 /// `propertyBoosts` audit-trail collection (id, transactionId, start/end,
-/// isActive), a `boostCredits` balance on `users/{uid}`, and an ownership
-/// check before any boost is applied. Credits are ADDED only by the server's
-/// `verifyPurchase` function (after Google confirms a pack purchase) and by the
-/// referral trigger; this class only spends them.
+/// isActive), a `boostCredits` balance on `users/{uid}`. Everything that changes
+/// a balance or a listing's boost fields happens on the server: credits are
+/// added by `verifyPurchase` (after Google confirms a pack purchase) and the
+/// referral trigger, spent by `redeemBoostCredit`, and a purchased boost is
+/// applied by `verifyPurchase` with the listing id.
 ///
 /// Note: the property-facing "is this listing boosted" flag is still the
 /// existing `isFeatured`/`featuredUntil` pair (not iOS's separate
@@ -19,7 +19,6 @@ class PremiumBoostService {
   PremiumBoostService._();
 
   static const _boostCreditsField = 'boostCredits';
-  static const _propertyBoostsCollection = 'propertyBoosts';
 
   static FirebaseFirestore get _db => FirebaseFirestore.instance;
   static String? get _uid => FirebaseAuth.instance.currentUser?.uid;
@@ -44,82 +43,24 @@ class PremiumBoostService {
     return (doc.data()?[_boostCreditsField] as num?)?.toInt() ?? 0;
   }
 
-  /// Direct single-duration boost purchase (not from a credit) — mirrors
-  /// iOS `activateBoost`, called once Play/StoreKit confirms the purchase.
-  static Future<void> activateBoost({
-    required PropertyRepository repository,
-    required String propertyId,
-    required String productId,
-    required int days,
-    required String transactionId,
-  }) async {
-    final uid = _uid;
-    if (uid == null) throw StateError('Must be signed in to boost a listing.');
-    await _verifyOwnership(propertyId, uid);
-
-    final until = DateTime.now().add(Duration(days: days));
-    final boostRef = _db.collection(_propertyBoostsCollection).doc();
-    await boostRef.set({
-      'id': boostRef.id,
-      'propertyId': propertyId,
-      'userId': uid,
-      'productId': productId,
-      'transactionId': transactionId,
-      'startDate': Timestamp.now(),
-      'endDate': Timestamp.fromDate(until),
-      'isActive': true,
-    });
-    await repository.boostListing(propertyId, until);
-  }
-
-  /// Applies one boost credit to [propertyId] for [days] — atomic: the
-  /// credit deduction and `propertyBoosts` record happen in a single
-  /// transaction, then the property is updated. Mirrors iOS
-  /// `applyBoostCredit`.
-  static Future<void> applyBoostCredit({
-    required PropertyRepository repository,
-    required String propertyId,
-    required int days,
-  }) async {
-    final uid = _uid;
-    if (uid == null) throw StateError('Must be signed in to boost a listing.');
-    await _verifyOwnership(propertyId, uid);
-
-    final until = DateTime.now().add(Duration(days: days));
-    final boostRef = _db.collection(_propertyBoostsCollection).doc();
-    final userRef = _db.collection('users').doc(uid);
-
-    await _db.runTransaction((tx) async {
-      final userDoc = await tx.get(userRef);
-      final current =
-          (userDoc.data()?[_boostCreditsField] as num?)?.toInt() ?? 0;
-      if (current < 1) {
-        throw StateError("You don't have enough boost credits.");
-      }
-      tx.set(boostRef, {
-        'id': boostRef.id,
-        'propertyId': propertyId,
-        'userId': uid,
-        'productId': 'boost.credit',
-        'transactionId': 'credit-${boostRef.id}',
-        'startDate': Timestamp.now(),
-        'endDate': Timestamp.fromDate(until),
-        'isActive': true,
-      });
-      tx.set(userRef, {_boostCreditsField: current - 1}, SetOptions(merge: true));
-    });
-
-    await repository.boostListing(propertyId, until);
-  }
-
-  static Future<void> _verifyOwnership(String propertyId, String userId) async {
-    final doc = await _db.collection('properties').doc(propertyId).get();
-    final data = doc.data();
-    final ownerId = data?['ownerId'] as String? ??
-        data?['owner_id'] as String? ??
-        data?['realtorId'] as String?;
-    if (!doc.exists || ownerId != userId) {
-      throw StateError('You can only boost properties you own.');
+  /// Spends one boost credit on [propertyId] (7 days). The server does it all in
+  /// one transaction - checks you own the listing and have a credit, deducts it,
+  /// records the boost and sets the listing's featured/boost fields - because
+  /// clients can no longer write those fields. Mirrors iOS `applyBoostCredit`.
+  static Future<void> applyBoostCredit({required String propertyId}) async {
+    if (_uid == null) throw StateError('Must be signed in to boost a listing.');
+    try {
+      await callRedeem({'propertyId': propertyId});
+    } on FirebaseFunctionsException catch (e) {
+      throw StateError(e.message ?? 'Could not apply the boost credit.');
     }
   }
+
+  /// Overridable in tests.
+  static Future<void> Function(Map<String, dynamic> payload) callRedeem =
+      (payload) async {
+    await FirebaseFunctions.instance
+        .httpsCallable('redeemBoostCredit')
+        .call<Object?>(payload);
+  };
 }

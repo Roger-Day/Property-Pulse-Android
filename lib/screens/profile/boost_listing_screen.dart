@@ -441,10 +441,7 @@ class _BoostCreditsSectionState extends State<_BoostCreditsSection> {
   Future<void> _redeem() async {
     setState(() => _redeeming = true);
     try {
-      await widget.billing.redeemBoostCredit(
-        propertyId: widget.propertyId,
-        days: 7,
-      );
+      await widget.billing.redeemBoostCredit(propertyId: widget.propertyId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Boost credit applied — 7 days added.')),
