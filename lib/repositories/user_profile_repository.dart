@@ -10,6 +10,7 @@ import '../models/host_booking_row.dart';
 import '../services/appointment_reminder_service.dart';
 import '../services/booking_availability_service.dart';
 import '../services/guest_stays_privacy_store.dart';
+import '../services/property_analytics_recorder.dart';
 import '../models/notification_model.dart';
 import '../models/property_model.dart';
 import '../models/project_interest_row.dart';
@@ -1451,17 +1452,15 @@ class UserProfileRepository {
       'viewedAt': FieldValue.serverTimestamp(),
     });
 
-    // Increment the shared property_analytics counter — mirrors iOS AnalyticsViewModel.
-    // This is what the lister analytics dashboard reads.
-    unawaited(
-      _db
-          .collection(AppConstants.propertyAnalyticsCollection)
-          .doc(propertyId)
-          .set({
-        'views': FieldValue.increment(1),
-        'lastViewed': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true)),
-    );
+    // Record this user as a viewer of the listing. The server counts unique viewers into
+    // property_analytics/{id}.views (what the lister dashboard and Most Viewed read); the app no
+    // longer writes the counter itself.
+    unawaited(PropertyAnalyticsRecorder.record(
+      _db,
+      propertyId: propertyId,
+      userId: userId,
+      event: PropertyAnalyticsEvent.view,
+    ));
   }
 
   /// Returns the most recently viewed property IDs for a user (up to [limit]).
