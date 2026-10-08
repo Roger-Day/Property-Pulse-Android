@@ -274,6 +274,11 @@ class _ExploreScreenState extends State<ExploreScreen>
           const SnackBar(content: Text('Search saved')),
         );
       }
+    } on SavedSearchLimitException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context)

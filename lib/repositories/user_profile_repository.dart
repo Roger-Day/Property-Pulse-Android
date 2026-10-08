@@ -1383,7 +1383,18 @@ class UserProfileRepository {
         .handleError((_) => <SavedSearchModel>[]);
   }
 
+  /// Saves a search. Throws [SavedSearchLimitException] when the user already has
+  /// [maxSavedSearches]; the server enforces the same cap and would delete the extra
+  /// search a moment after it was created.
   Future<void> saveSearch(SavedSearchModel search) async {
+    final existing = await _db
+        .collection(AppConstants.savedSearchesCollection)
+        .where('userId', isEqualTo: search.userId)
+        .count()
+        .get();
+    if ((existing.count ?? 0) >= maxSavedSearches) {
+      throw const SavedSearchLimitException();
+    }
     await _db
         .collection(AppConstants.savedSearchesCollection)
         .add(search.toFirestore());
@@ -1529,4 +1540,17 @@ DateTime? _parseExportTimestamp(dynamic v) {
   if (v is Timestamp) return v.toDate();
   if (v is DateTime) return v;
   return null;
+}
+
+/// How many saved searches one user can keep (the server enforces the same cap).
+const int maxSavedSearches = 20;
+
+class SavedSearchLimitException implements Exception {
+  const SavedSearchLimitException();
+
+  String get message =>
+      'You can save up to $maxSavedSearches searches. Delete one to save another.';
+
+  @override
+  String toString() => message;
 }
