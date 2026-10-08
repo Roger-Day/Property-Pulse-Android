@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../constants/app_constants.dart';
+import '../logic/most_viewed_ranking.dart';
 import '../models/property_model.dart';
 import '../services/search/location_search_service.dart';
 import '../services/search/search_relevance.dart';
@@ -264,49 +265,69 @@ class PropertyRepository {
   Stream<List<PropertyModel>> watchFeaturedListings() =>
       watchHomePropertyPool();
 
-  /// Ranks listings by `property_analytics/{id}.views` (same idea as iOS Home).
-  /// Uses batched whereIn queries (≤ 30 per batch) instead of N individual doc
-  /// fetches, cutting Firestore read operations from O(N) to O(N/30).
-  /// When every view count is 0, still shows a slice of active listings so the
-  /// row isn't blank.
-  Stream<List<PropertyModel>> watchMostViewedListings() {
-    const pool = 60;
-    return _baseQuery().limit(pool).snapshots().asyncMap((snap) async {
-      final list = _mapSnapshot(snap);
-      if (list.isEmpty) return <PropertyModel>[];
+  /// Most viewed listings, ranked by `property_analytics/{id}.views`.
+  ///
+  /// Asks the analytics collection for its top documents (an indexed query on
+  /// `views`) and loads only those listings, so ranking covers EVERY listing -
+  /// not just the newest 60 - and costs a couple of reads instead of one per
+  /// listing. Listings that are expired, hidden or deleted are skipped. If few
+  /// listings have been viewed, the row is topped up with the newest listings
+  /// so it isn't blank. Emits once per subscription; the result is cached for
+  /// five minutes.
+  Stream<List<PropertyModel>> watchMostViewedListings({int limit = 20}) async* {
+    final cached = _mostViewedCache;
+    if (cached != null &&
+        cached.limit >= limit &&
+        DateTime.now().difference(cached.at) < const Duration(minutes: 5)) {
+      yield cached.items.take(limit).toList();
+      return;
+    }
+    final items = await _loadMostViewed(limit);
+    _mostViewedCache = (at: DateTime.now(), limit: limit, items: items);
+    yield items;
+  }
 
-      final ids = list.map((p) => p.id).toList();
+  ({DateTime at, int limit, List<PropertyModel> items})? _mostViewedCache;
 
-      // Batch into chunks of 30 — Firestore whereIn limit.
-      final chunks = <List<String>>[];
-      for (var i = 0; i < ids.length; i += 30) {
-        chunks.add(ids.sublist(i, (i + 30).clamp(0, ids.length)));
+  Future<List<PropertyModel>> _loadMostViewed(int limit) async {
+    // A few more than needed: some top listings will be expired or hidden.
+    final analytics = await _db
+        .collection(AppConstants.propertyAnalyticsCollection)
+        .orderBy('views', descending: true)
+        .limit(limit * 3)
+        .get();
+    final ids = MostViewedRanking.rankedIds(
+      analytics.docs.map((d) {
+        final data = d.data();
+        final views = data['views'];
+        return (
+          id: d.id,
+          views: views is num ? views : 0,
+          isDeleted: data['isDeleted'] == true,
+        );
+      }),
+      limit: limit * 3,
+    );
+
+    final byId = <String, PropertyModel>{};
+    for (var i = 0; i < ids.length; i += 30) {
+      final chunk = ids.sublist(i, (i + 30).clamp(0, ids.length));
+      final snap = await _db
+          .collection(AppConstants.propertiesCollection)
+          .where(FieldPath.documentId, whereIn: chunk)
+          .get();
+      for (final p in _mapSnapshot(snap)) {
+        byId[p.id] = p;
       }
+    }
+    final ranked = MostViewedRanking.inRankOrder(ids, byId);
 
-      // Fetch all analytics docs with O(ceil(N/30)) queries instead of O(N).
-      final viewsMap = <String, int>{};
-      for (final chunk in chunks) {
-        final analyticsSnap = await _db
-            .collection(AppConstants.propertyAnalyticsCollection)
-            .where(FieldPath.documentId, whereIn: chunk)
-            .get();
-        for (final doc in analyticsSnap.docs) {
-          final v = doc.data()['views'];
-          viewsMap[doc.id] = v is int ? v : (v is num ? v.toInt() : 0);
-        }
-      }
-
-      final scored = list
-          .map((p) => (p: p, views: viewsMap[p.id] ?? 0))
-          .toList()
-        ..sort((a, b) => b.views.compareTo(a.views));
-
-      final hasAnyViews = scored.any((e) => e.views > 0);
-      if (hasAnyViews) {
-        return scored.take(20).map((e) => e.p).toList();
-      }
-      return list.take(8).toList();
-    });
+    if (ranked.length >= 8) return ranked.take(limit).toList();
+    final newest = _mapSnapshot(await _baseQuery().limit(20).get());
+    newest.sort((a, b) => (b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+        .compareTo(a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
+    return MostViewedRanking.paddedTo<PropertyModel>(ranked, newest,
+        minimum: 8, limit: limit, idOf: (p) => p.id);
   }
 
   /// Similar/comparable listings — same city + propertyType, different propertyId.
