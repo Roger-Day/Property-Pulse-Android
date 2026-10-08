@@ -34,25 +34,4 @@ class InAppNotificationService {
       // failing the underlying action over a notification-write error.
     }
   }
-
-  /// All admin uids — role is stored as either `"Admin"` (iOS's exact
-  /// rawValue) or `"admin"` (written by Flutter/legacy paths elsewhere in
-  /// this codebase), so both casings are queried and unioned rather than a
-  /// single exact-match query that would silently miss half the admins.
-  static Future<List<String>> allAdminUserIds() async {
-    // `user_public` mirrors every user's role; listing `users` is admin-only.
-    final col = FirebaseFirestore.instance
-        .collection(AppConstants.userPublicCollection);
-    final results = await Future.wait([
-      col.where('role', isEqualTo: 'Admin').get(),
-      col.where('role', isEqualTo: 'admin').get(),
-    ]);
-    final ids = <String>{};
-    for (final snap in results) {
-      for (final d in snap.docs) {
-        ids.add(d.id);
-      }
-    }
-    return ids.toList();
-  }
 }
