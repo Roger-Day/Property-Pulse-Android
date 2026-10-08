@@ -3,9 +3,9 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../constants/app_colors.dart';
-import 'package:firebase_auth/firebase_auth.dart' as fb;
 
 import '../../providers/auth_provider.dart';
+import '../../services/account_deletion_service.dart';
 import '../../providers/feature_flags_provider.dart';
 import '../../providers/theme_mode_provider.dart' show ThemeModeNotifier;
 import 'subscription_plans_screen.dart';
@@ -205,7 +205,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Account'),
         content: const Text(
-          'This will permanently delete your account and all data. This cannot be undone.',
+          'This will permanently delete your account, your listings, messages, photos and ID documents. This cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -223,12 +223,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirmed != true || !mounted) return;
     try {
-      await fb.FirebaseAuth.instance.currentUser?.delete();
+      await AccountDeletionService.deleteAccount();
       if (mounted) context.go('/welcome');
-    } catch (e) {
+    } on AccountDeletionException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error: $e')));
+          .showSnackBar(SnackBar(content: Text(e.message)));
     }
   }
 }

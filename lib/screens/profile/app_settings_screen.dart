@@ -15,6 +15,7 @@ import '../../models/user_profile_doc.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_mode_provider.dart';
 import '../../repositories/user_profile_repository.dart';
+import '../../services/account_deletion_service.dart';
 import 'profile_subscreen_widgets.dart';
 
 /// Mirrors iOS `SettingsView`: sectioned hub (Account, Data, App, Support),
@@ -199,29 +200,20 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
         ) ??
         false;
     if (!go || !mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Contact support'),
-        content: const Text(
-          'To complete account deletion, contact our team so we can verify '
-          'your identity and remove your data from our systems.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _launchMailtoSupport();
-            },
-            child: const Text('Email support'),
-          ),
-        ],
-      ),
-    );
+    final messenger = ScaffoldMessenger.of(context);
+    final router = GoRouter.of(context);
+    messenger.showSnackBar(const SnackBar(
+      content: Text('Deleting your account...'),
+      duration: Duration(seconds: 30),
+    ));
+    try {
+      await AccountDeletionService.deleteAccount();
+      messenger.hideCurrentSnackBar();
+      router.go('/welcome');
+    } on AccountDeletionException catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    }
   }
 
   Future<void> _confirmSignOut() async {
