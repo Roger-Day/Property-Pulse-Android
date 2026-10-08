@@ -124,7 +124,7 @@ class ProfileActionsRepository {
           .collection('redemptions')
           .get();
 
-      final count = usedSnap.docs.length;
+      final count = countCreditedReferrals(usedSnap.docs.map((d) => d.data()));
       return ReferralStats(
         code: code,
         successfulReferrals: count,
@@ -154,4 +154,12 @@ class ProfileActionsRepository {
         .snapshots()
         .map((snap) => (snap.data()?['boostCredits'] as num?)?.toInt() ?? 0);
   }
+}
+
+/// Redemptions that earned (or are about to earn) the referrer a credit. The server
+/// marks a redemption `awardStatus: "rejected"` when it fails its checks (unverified
+/// or old account, same person, monthly cap, ...); those don't count. A redemption
+/// with no status yet, or from before the checks existed, counts.
+int countCreditedReferrals(Iterable<Map<String, dynamic>> redemptions) {
+  return redemptions.where((r) => r['awardStatus'] != 'rejected').length;
 }
