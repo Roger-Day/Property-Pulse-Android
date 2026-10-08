@@ -303,9 +303,8 @@ class PushNotificationService {
         'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
         'platform': 'android',
       }, SetOptions(merge: true));
-      await _db.collection('user_public').doc(userId).set({
-        'fcmToken': token,
-      }, SetOptions(merge: true));
+      // The token is NOT copied to user_public: that document is readable by every
+      // signed-in user, and the server reads tokens from users/{uid} only.
       debugPrint('PushNotificationService: FCM token saved for $userId');
     } catch (e) {
       debugPrint('PushNotificationService: FCM save failed: $e');
