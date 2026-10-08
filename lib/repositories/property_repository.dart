@@ -942,8 +942,10 @@ class PropertyRepository {
         .collection(AppConstants.usersCollection)
         .doc(currentUserId)
         .get();
+    // The other person's name and photo come from their public profile; their
+    // `users` document is not readable by other users.
     final hostSnap =
-        await _db.collection(AppConstants.usersCollection).doc(hostId).get();
+        await _db.collection(AppConstants.userPublicCollection).doc(hostId).get();
 
     final me = meSnap.data() ?? {};
     final host = hostSnap.data() ?? {};
@@ -955,7 +957,9 @@ class PropertyRepository {
         fallback;
 
     String? photoUrl(Map<String, dynamic> d) =>
-        d['photoURL'] as String? ?? d['photoUrl'] as String?;
+        d['photoURL'] as String? ??
+        d['photoUrl'] as String? ??
+        d['profileImageURL'] as String?;
 
     final sortedUids = [currentUserId, hostId]..sort();
 
@@ -1013,8 +1017,10 @@ class PropertyRepository {
 
     final meSnap =
         await _db.collection(AppConstants.usersCollection).doc(a).get();
+    // Only the caller's own `users` document is readable; the other person's
+    // name and photo come from their public profile.
     final otherSnap =
-        await _db.collection(AppConstants.usersCollection).doc(b).get();
+        await _db.collection(AppConstants.userPublicCollection).doc(b).get();
     final me = meSnap.data() ?? {};
     final other = otherSnap.data() ?? {};
 
@@ -1025,7 +1031,9 @@ class PropertyRepository {
         fallback;
 
     String? photoUrl(Map<String, dynamic> d) =>
-        d['photoURL'] as String? ?? d['photoUrl'] as String?;
+        d['photoURL'] as String? ??
+        d['photoUrl'] as String? ??
+        d['profileImageURL'] as String?;
 
     await ref.set({
       'participants': participants,

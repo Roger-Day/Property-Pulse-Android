@@ -395,28 +395,43 @@ class ProjectRepository {
     );
   }
 
-  /// One-shot read of `users/{uid}` for team roster hydration — iOS `hydrateUsers`.
+  /// One-shot read of the team roster's names and photos, from each member's
+  /// public profile (`user_public`; another user's `users` document is private).
+  ///
+  /// The email shown next to a member is the one their invite was sent to
+  /// ([inviteIdsByUserId] maps a member to the invite they accepted). Only the
+  /// development's owner/admins can read invites, so for anyone else the email
+  /// is simply left out.
   Future<Map<String, TeamMemberDirectoryEntry>> fetchTeamMemberDirectory(
-    Iterable<String> userIds,
-  ) async {
+    Iterable<String> userIds, {
+    Map<String, String> inviteIdsByUserId = const {},
+  }) async {
     final out = <String, TeamMemberDirectoryEntry>{};
     final unique =
         userIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
     await Future.wait(unique.map((uid) async {
       try {
-        final snap = await _db.collection('users').doc(uid).get();
+        final snap =
+            await _db.collection(AppConstants.userPublicCollection).doc(uid).get();
         final d = snap.data();
         if (d == null) {
           out[uid] = const TeamMemberDirectoryEntry();
           return;
         }
         final name = (d['fullName'] as String?)?.trim() ??
-            (d['full_name'] as String?)?.trim() ??
+            (d['displayName'] as String?)?.trim() ??
             '';
-        final email = (d['email'] as String?)?.trim() ?? '';
-        final rawPhoto = (d['profileImageURL'] as String?)?.trim() ??
-            (d['profile_image_url'] as String?)?.trim() ??
-            '';
+        final rawPhoto = (d['profileImageURL'] as String?)?.trim() ?? '';
+        var email = '';
+        final inviteId = inviteIdsByUserId[uid]?.trim() ?? '';
+        if (inviteId.isNotEmpty) {
+          try {
+            final invite = await _db.collection('invites').doc(inviteId).get();
+            email = (invite.data()?['email'] as String?)?.trim() ?? '';
+          } catch (_) {
+            // Not allowed to see invites: show the member without an email.
+          }
+        }
         out[uid] = TeamMemberDirectoryEntry(
           displayName: name,
           email: email,

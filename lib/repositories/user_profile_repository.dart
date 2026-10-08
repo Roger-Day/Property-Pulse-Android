@@ -350,34 +350,21 @@ class UserProfileRepository {
     }, SetOptions(merge: true));
   }
 
-  /// Public-facing profile stream — prefers `user_public`, falls back to `users`.
+  /// Public-facing profile stream, from `user_public`. (It used to fall back to
+  /// `users/{id}`, which other users can't read once that document is private.)
   Stream<PublicProfileSummary?> watchPublicProfile(String userId) {
     return _db
         .collection(AppConstants.userPublicCollection)
         .doc(userId)
         .snapshots()
-        .asyncMap((snap) async {
-      if (snap.exists) {
-        final d = snap.data() ?? {};
-        return PublicProfileSummary(
-          userId: userId,
-          displayName: (d['displayName'] ?? d['name'] ?? 'User').toString(),
-          photoUrl: d['photoURL'] as String? ?? d['profileImageURL'] as String?,
-          bio: d['bio'] as String?,
-          role: d['role'] as String?,
-          verificationStatus: d['verificationStatus'] as String?,
-        );
-      }
-      final u = await _db
-          .collection(AppConstants.usersCollection)
-          .doc(userId)
-          .get();
-      if (!u.exists) return null;
-      final d = u.data() ?? {};
+        .map((snap) {
+      if (!snap.exists) return null;
+      final d = snap.data() ?? {};
       return PublicProfileSummary(
         userId: userId,
-        displayName: (d['fullName'] ?? d['displayName'] ?? 'User').toString(),
-        photoUrl: d['profileImageURL'] as String? ?? d['photoURL'] as String?,
+        displayName:
+            (d['displayName'] ?? d['name'] ?? d['fullName'] ?? 'User').toString(),
+        photoUrl: d['photoURL'] as String? ?? d['profileImageURL'] as String?,
         bio: d['bio'] as String?,
         role: d['role'] as String?,
         verificationStatus: d['verificationStatus'] as String?,

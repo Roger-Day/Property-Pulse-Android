@@ -83,6 +83,10 @@ class _DevelopmentTeamScreenState extends State<DevelopmentTeamScreen> {
       final repo = context.read<ProjectRepository>();
       final map = await repo.fetchTeamMemberDirectory(
         members.map((m) => m.userId),
+        inviteIdsByUserId: {
+          for (final m in members)
+            if ((m.inviteId ?? '').trim().isNotEmpty) m.userId: m.inviteId!,
+        },
       );
       if (!mounted) return;
       setState(() {
