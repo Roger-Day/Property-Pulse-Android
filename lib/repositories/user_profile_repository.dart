@@ -29,9 +29,13 @@ class UserAdminRoleState {
     required this.isAdmin,
     required this.resolved,
     required this.requiredRoleSelected,
+    this.isDeveloper = false,
   });
 
   final bool isAdmin;
+  /// The account's role in `users/{uid}` is Developer (or admin). Read from `users` only: the
+  /// public profile's role can be written by the user, so it cannot decide who owns a development.
+  final bool isDeveloper;
   /// True after at least one snapshot from each of `users` and `user_public`.
   final bool resolved;
   /// True once `users/{uid}.requiredRoleSelected` is `true` — an explicit
@@ -138,6 +142,7 @@ class UserProfileRepository {
       final fromPublic =
           UserProfileDoc.isAdminRole(publicData?['role'] as String?);
       controller.add(UserAdminRoleState(
+        isDeveloper: UserProfileDoc.isDeveloperAccountRole(usersData?['role'] as String?),
         isAdmin: fromUsers || fromPublic,
         resolved: usersSeen && publicSeen,
         requiredRoleSelected: usersData?['requiredRoleSelected'] == true,

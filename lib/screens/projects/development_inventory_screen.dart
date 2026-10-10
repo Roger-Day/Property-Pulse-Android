@@ -52,6 +52,7 @@ class DevelopmentInventoryScreen extends StatelessWidget {
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
+              isDeveloperAccount: userRole.isDeveloper,
               currentUserId: uid,
               project: project,
               firestoreTeamDocRole: roleSnap.data,

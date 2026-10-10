@@ -424,6 +424,7 @@ class _EditDevelopmentScreenState extends State<EditDevelopmentScreen> {
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
+              isDeveloperAccount: userRole.isDeveloper,
               currentUserId: uid,
               project: p,
               firestoreTeamDocRole: roleSnap.data,

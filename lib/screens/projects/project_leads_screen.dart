@@ -119,6 +119,7 @@ class _ProjectLeadsScreenState extends State<ProjectLeadsScreen> {
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
+              isDeveloperAccount: userRole.isDeveloper,
               currentUserId: uid,
               project: project,
               firestoreTeamDocRole: roleSnap.data,

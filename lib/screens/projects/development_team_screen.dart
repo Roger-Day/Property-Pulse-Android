@@ -330,6 +330,7 @@ class _DevelopmentTeamScreenState extends State<DevelopmentTeamScreen> {
           builder: (context, roleSnap) {
             final effective = resolveEffectiveDevelopmentRole(
               isAppAdmin: userRole.isAdmin,
+              isDeveloperAccount: userRole.isDeveloper,
               currentUserId: uid,
               project: project,
               firestoreTeamDocRole: roleSnap.data,

@@ -21,8 +21,12 @@ class UserRoleProvider extends ChangeNotifier {
 
   bool _resolved = false;
   bool _isAdmin = false;
+  bool _isDeveloper = false;
 
   bool get isAdmin => _isAdmin;
+
+  /// The signed-in account is a Developer (or admin): the only accounts that own a development.
+  bool get isDeveloper => _isDeveloper || _isAdmin;
 
   /// True after at least one snapshot from both `users` and `user_public` (or immediately if signed out).
   bool get adminRoleResolved => _resolved;
@@ -34,6 +38,7 @@ class UserRoleProvider extends ChangeNotifier {
     if (user == null) {
       _resolved = true;
       _isAdmin = false;
+      _isDeveloper = false;
       notifyListeners();
       return;
     }
@@ -49,6 +54,7 @@ class UserRoleProvider extends ChangeNotifier {
     _sub = _repo.watchAdminRole(user.uid).listen((state) {
       _resolved = state.resolved;
       _isAdmin = state.isAdmin;
+      _isDeveloper = state.isDeveloper;
 
       // Reconcile the device-local "required role picker" flag against the
       // account's actual server-side role. Without this, an existing user

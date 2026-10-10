@@ -552,6 +552,7 @@ class _ProjectDetailBody extends StatelessWidget {
       builder: (context, snap) {
         final effective = resolveEffectiveDevelopmentRole(
           isAppAdmin: role.isAdmin,
+          isDeveloperAccount: role.isDeveloper,
           currentUserId: uid,
           project: project,
           firestoreTeamDocRole: snap.data,

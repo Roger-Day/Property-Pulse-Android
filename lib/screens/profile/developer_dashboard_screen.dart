@@ -916,6 +916,8 @@ class _ProjectManagementCardState extends State<_ProjectManagementCard> {
                 // and Units for every tier, including read-only Viewers.
                 final role = resolveEffectiveDevelopmentRole(
                   isAppAdmin: isAdmin,
+                  isDeveloperAccount:
+                      context.watch<UserRoleProvider>().isDeveloper,
                   currentUserId: uid,
                   project: project,
                   firestoreTeamDocRole: roleSnap.data,

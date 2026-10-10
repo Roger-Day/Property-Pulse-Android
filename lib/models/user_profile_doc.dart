@@ -141,6 +141,13 @@ class UserProfileDoc {
     return r == 'admin';
   }
 
+  /// A Developer account (or an admin). Only these own a development: being named as a project's
+  /// owner is not enough for a Realtor, Property Owner, Seeker or Airbnb Host account.
+  static bool isDeveloperAccountRole(String? role) {
+    final r = role?.toLowerCase().trim() ?? '';
+    return r == 'developer' || r == 'admin';
+  }
+
   /// Matches iOS `UserRole.propertySeeker` for hiding Analytics toggle.
   static bool isPropertySeekerRole(String? role) {
     final r = role?.toLowerCase().trim() ?? '';
