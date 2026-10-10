@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
 import '../constants/app_constants.dart';
@@ -98,10 +99,29 @@ class AlreadyRegisteredException implements Exception {
 }
 
 /// Firestore `projects` — aligned with iOS `ProjectViewModel.activeHomeProjects`.
+/// Thrown by [ProjectRepository.submitInterest] with a sentence the user can read
+/// (for example "verify your email first"), taken from the backend's answer.
+class InterestSubmissionException implements Exception {
+  const InterestSubmissionException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class ProjectRepository {
-  ProjectRepository(this._db);
+  /// [createLead] sends an inquiry to the backend; tests pass a stand-in.
+  ProjectRepository(
+    this._db, {
+    Future<void> Function(Map<String, dynamic> payload)? createLead,
+  }) : _createLead = createLead ?? _callCreateDevelopmentLead;
 
   final FirebaseFirestore _db;
+  final Future<void> Function(Map<String, dynamic> payload) _createLead;
+
+  static Future<void> _callCreateDevelopmentLead(Map<String, dynamic> payload) async {
+    await FirebaseFunctions.instance.httpsCallable('createDevelopmentLead').call(payload);
+  }
 
   static bool _isSampleOrSeed(ProjectModel p) {
     if (p.developerId.toLowerCase() == 'dev-seed') return true;
@@ -1004,6 +1024,9 @@ class ProjectRepository {
     String? message,
     String? userId,
     String? projectName,
+    String? budgetRange,
+    String? timeline,
+    String? financingStatus,
   }) async {
     final pid = projectId.trim();
     if (pid.isEmpty || name.trim().isEmpty || email.trim().isEmpty) return;
@@ -1021,45 +1044,31 @@ class ProjectRepository {
       }
     }
 
-    // Write the developer-facing interest doc and capture its ID.
-    final interestRef = await _db
-        .collection(AppConstants.projectsCollection)
-        .doc(pid)
-        .collection('interests')
-        .add({
-      'projectId': pid,
-      if (userId != null && userId.isNotEmpty) 'userId': userId,
-      'name': name.trim(),
-      'email': email.trim(),
-      if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
-      if (message != null && message.trim().isNotEmpty)
-        'message': message.trim(),
-      'conversionStatus': 'new',
-      'contactUnlocked': false,
-      'createdAt': FieldValue.serverTimestamp(),
-      'lastUpdated': FieldValue.serverTimestamp(),
-    });
+    String? clean(String? v) => (v == null || v.trim().isEmpty) ? null : v.trim();
 
-    // Mirror to the user's own subcollection so the dashboard and
-    // _RegisterInterestBar can show the persisted "already registered" state
-    // across restarts.  Doc ID = projectId keeps it idempotent.
-    if (userId != null && userId.trim().isNotEmpty) {
-      await _db
-          .collection(AppConstants.usersCollection)
-          .doc(userId.trim())
-          .collection('project_interests')
-          .doc(pid)
-          .set({
+    // The lead is created by the backend (`createDevelopmentLead`): it checks the sender, the
+    // daily limit and duplicates, bills the developer, stores the contact details privately and
+    // mirrors the "already registered" record for the user. Clients may not write leads directly
+    // (the rules refuse it), which is why the old direct write here was being denied.
+    try {
+      await _createLead({
         'projectId': pid,
-        if (projectName != null && projectName.trim().isNotEmpty)
-          'projectName': projectName.trim(),
-        'interestId': interestRef.id,
-        'conversionStatus': 'new',
-        'createdAt': FieldValue.serverTimestamp(),
-        if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
-        if (message != null && message.trim().isNotEmpty)
-          'notes': message.trim(),
-      }, SetOptions(merge: true));
+        'intentType': 'inquiry',
+        'name': name.trim(),
+        'email': email.trim(),
+        if (clean(phone) != null) 'phone': clean(phone),
+        if (clean(message) != null) 'message': clean(message),
+        if (clean(budgetRange) != null) 'budgetRange': clean(budgetRange),
+        if (clean(timeline) != null) 'timeline': clean(timeline),
+        if (clean(financingStatus) != null) 'financingStatus': clean(financingStatus),
+      });
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'already-exists') throw const AlreadyRegisteredException();
+      throw InterestSubmissionException(
+        (e.message ?? '').isNotEmpty
+            ? e.message!
+            : 'We could not send your interest. Please try again.',
+      );
     }
   }
 

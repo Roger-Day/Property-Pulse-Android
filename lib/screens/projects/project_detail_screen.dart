@@ -1536,6 +1536,9 @@ class _RegisterInterestSheetState extends State<_RegisterInterestSheet> {
                 ? _messageCtrl.text.trim()
                 : null,
             userId: widget.userId,
+            budgetRange: _budgetCtrl.text,
+            timeline: _timelineCtrl.text,
+            financingStatus: _financingCtrl.text,
           );
       unawaited(AnalyticsService.logRegisterInterestSuccess(
         widget.project.firestoreDocumentId,
@@ -1567,8 +1570,9 @@ class _RegisterInterestSheetState extends State<_RegisterInterestSheet> {
         e.toString(),
       ));
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(e is InterestSubmissionException ? e.message : 'Failed: $e'),
+      ));
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
