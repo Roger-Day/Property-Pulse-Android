@@ -14,6 +14,7 @@ import '../../models/moderation_log.dart';
 import '../../models/moderation_stats.dart';
 import '../../providers/moderation_feature_flags_provider.dart';
 import '../../repositories/admin_repository.dart';
+import '../../services/verification_service.dart';
 import '../../services/dispute_service.dart';
 import '../../utils/responsive.dart';
 import '../host/dispute_detail_screen.dart';
@@ -2734,6 +2735,10 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
 
   /// Sets status on a verification request, passing userId so the user's
   /// profile is also updated (verified badge, `userVerifications` record).
+  /// Requests on screen by id, so a decision can tell backend requests from older ones.
+  final Map<String, Map<String, dynamic>> _rowsById = {};
+  final VerificationService _verification = VerificationService();
+
   Future<void> _setStatus(
     BuildContext context,
     String id,
@@ -2741,6 +2746,10 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
     String? userId,
     String? note,
   }) async {
+    final row = _rowsById[id];
+    if (row != null && AdminRepository.isBackendRequest(row)) {
+      return _setStatusBackend(context, row, id, status, userId: userId, note: note);
+    }
     try {
       await widget.admin.updateVerificationRequestStatus(
         docId: id,
@@ -2954,6 +2963,77 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
     );
   }
 
+  /// A decision on a request filed through the backend: the backend checks the evidence, records
+  /// the reviewer, and tells the user once. Suspend / re-review belong to the older process.
+  Future<void> _setStatusBackend(
+    BuildContext context,
+    Map<String, dynamic> row,
+    String id,
+    String status, {
+    String? userId,
+    String? note,
+  }) async {
+    final decision = status == 'verified'
+        ? 'approve'
+        : status == 'rejected'
+            ? 'reject'
+            : status == 'resubmit'
+                ? 'request_resubmission'
+                : null;
+    String done;
+    try {
+      if (decision != null) {
+        await _verification.review(requestId: id, decision: decision, note: note);
+        done = decision == 'approve'
+            ? 'Verification approved'
+            : decision == 'reject'
+                ? 'Verification rejected'
+                : 'Asked the user to resubmit';
+      } else if (status == 'revoked') {
+        await _verification.revoke(
+          userId: userId ?? '${row['userId']}',
+          section: '${row['type'] ?? 'identity'}',
+          reason: (note ?? '').isEmpty ? 'Revoked by an administrator' : note!,
+        );
+        done = 'Verification revoked';
+      } else {
+        done = 'That action is not used for these requests. Ask the user to submit again instead.';
+      }
+    } catch (e) {
+      done = verificationErrorMessage(e);
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done)));
+    }
+  }
+
+  /// Asks for a note, then sends the request back for resubmission.
+  Future<void> _askToResubmit(BuildContext context, String id, {String? userId}) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Ask to resubmit'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: 'What should they fix? The user sees this.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final note = ctrl.text.trim().isEmpty ? 'Please resubmit clearer photos.' : ctrl.text.trim();
+    await _setStatus(context, id, 'resubmit', userId: userId, note: note);
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<Map<String, dynamic>>>(
@@ -2961,6 +3041,9 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
       builder: (context, snapshot) {
         final all = snapshot.data ?? [];
         final identity = all.where(AdminRepository.isIdentityVerification).toList();
+        _rowsById
+          ..clear()
+          ..addEntries(identity.map((r) => MapEntry('${r['id']}', r)));
         final q = _search.text.trim().toLowerCase();
 
         // 'verified' is the canonical iOS status; treat legacy 'approved' as alias.
@@ -2968,6 +3051,8 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
             .where((d) {
               final s = d['status'] as String? ?? 'pending';
               if (status == 'verified') return s == 'verified' || s == 'approved';
+              // A request sent back for resubmission is decided, so it sits with the rejected ones.
+              if (status == 'rejected') return s == 'rejected' || s == 'requires_resubmission';
               return s == status;
             })
             .where((d) {
@@ -3056,6 +3141,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
     switch (_segment) {
       case 0:
         return _VerificationList(
+          loadEvidence: _verification.evidenceUrls,
           rows: pending,
           emptyLabel: 'No pending identity documents.',
           buildTrailing: (r) => Row(
@@ -3066,6 +3152,12 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
                 icon: const Icon(Icons.history, color: AppColors.textSecondary),
                 onPressed: () => _showHistory(context, r['id'] as String),
               ),
+              if (AdminRepository.isBackendRequest(r))
+                IconButton(
+                  tooltip: 'Ask to resubmit',
+                  icon: const Icon(Icons.refresh_rounded, color: Colors.orange),
+                  onPressed: () => _askToResubmit(context, r['id'] as String, userId: r['userId'] as String?),
+                ),
               IconButton(
                 tooltip: 'Approve',
                 icon: const Icon(Icons.check_circle_outline, color: Colors.green),
@@ -3081,6 +3173,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
         );
       case 1:
         return _VerificationList(
+          loadEvidence: _verification.evidenceUrls,
           rows: verified,
           emptyLabel: 'No verified users.',
           buildTrailing: (r) => Row(
@@ -3110,6 +3203,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
         );
       case 2:
         return _VerificationList(
+          loadEvidence: _verification.evidenceUrls,
           rows: rejected,
           emptyLabel: 'No rejected requests.',
           buildTrailing: (r) => Row(
@@ -3129,6 +3223,7 @@ class _VerificationHubTabState extends State<_VerificationHubTab> {
         );
       case 3:
         return _VerificationList(
+          loadEvidence: _verification.evidenceUrls,
           rows: revoked,
           emptyLabel: 'No revoked verifications.',
           buildTrailing: (r) => Row(
@@ -3212,10 +3307,12 @@ class _VerificationList extends StatelessWidget {
     required this.rows,
     required this.emptyLabel,
     required this.buildTrailing,
+    required this.loadEvidence,
   });
   final List<Map<String, dynamic>> rows;
   final String emptyLabel;
   final Widget Function(Map<String, dynamic> r) buildTrailing;
+  final Future<List<({String type, List<String> urls})>> Function(String requestId) loadEvidence;
 
   @override
   Widget build(BuildContext context) {
@@ -3227,7 +3324,10 @@ class _VerificationList extends StatelessWidget {
       itemBuilder: (context, i) {
         final r = rows[i];
         final uid = r['userId'] as String? ?? '';
-        final level = r['requestedLevel'] as String? ?? '';
+        final backendRequest = AdminRepository.isBackendRequest(r);
+        final level = backendRequest
+            ? (r['type'] == 'professional' ? 'Professional credential' : 'Government ID')
+            : (r['requestedLevel'] as String? ?? r['level'] as String? ?? '');
         final note = r['note'] as String? ?? '';
 
         // Support both submission schemas: the legacy single-`documentUrl`
@@ -3271,7 +3371,9 @@ class _VerificationList extends StatelessWidget {
                     buildTrailing(r),
                   ],
                 ),
-                if (urls.isNotEmpty) ...[
+                if (backendRequest)
+                  _BackendEvidence(requestId: '${r['id']}', load: loadEvidence)
+                else if (urls.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Wrap(
                     spacing: 8,
@@ -3292,6 +3394,80 @@ class _VerificationList extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Photos for a backend request are private: an admin asks the backend for short-lived links
+/// (each look is written to the audit log), and nothing is stored on the device.
+class _BackendEvidence extends StatefulWidget {
+  const _BackendEvidence({required this.requestId, required this.load});
+  final String requestId;
+  final Future<List<({String type, List<String> urls})>> Function(String requestId) load;
+
+  @override
+  State<_BackendEvidence> createState() => _BackendEvidenceState();
+}
+
+class _BackendEvidenceState extends State<_BackendEvidence> {
+  List<({String type, List<String> urls})>? _docs;
+  bool _loading = false;
+  String? _error;
+
+  String _title(String type) {
+    switch (type) {
+      case 'government_id':
+        return 'Government ID';
+      case 'professional_licence':
+        return 'Professional licence';
+      case 'business_registration':
+        return 'Business registration';
+      default:
+        return type;
+    }
+  }
+
+  Future<void> _show() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final docs = await widget.load(widget.requestId);
+      if (mounted) setState(() => _docs = docs);
+    } catch (e) {
+      if (mounted) setState(() => _error = verificationErrorMessage(e));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final docs = _docs;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        if (docs == null)
+          OutlinedButton.icon(
+            onPressed: _loading ? null : _show,
+            icon: const Icon(Icons.lock_open_outlined, size: 18),
+            label: Text(_loading ? 'Loading…' : 'Show photos (logged)'),
+          )
+        else
+          for (final d in docs) ...[
+            Text(_title(d.type), style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [for (final u in d.urls) _VerificationDocumentTile(url: u)],
+            ),
+            const SizedBox(height: 8),
+          ],
+        if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+      ],
     );
   }
 }

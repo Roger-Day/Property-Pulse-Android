@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,274 +9,391 @@ import '../../constants/app_colors.dart';
 import '../../models/listing_entitlements.dart';
 import '../../models/user_profile_doc.dart';
 import '../../repositories/user_profile_repository.dart';
+import '../../services/auth_service.dart';
+import '../../services/verification_service.dart';
 import 'enhanced_verification_screen.dart';
 
-/// Shows user's current verification status with detailed breakdown.
-/// Mirrors iOS `VerificationDetailsView`.
-class VerificationDetailsScreen extends StatelessWidget {
-  const VerificationDetailsScreen({super.key, required this.userId});
+/// The verification centre: where the account stands on each separate check, and what to do next.
+/// Mirrors iOS `VerificationDetailsView`. It only displays what the backend recorded
+/// (`userVerifications/{uid}`) and never decides anything.
+///   Email + phone -> Basic (automatic)   ID reviewed -> Standard   Credential reviewed -> Professional
+class VerificationDetailsScreen extends StatefulWidget {
+  const VerificationDetailsScreen({super.key, required this.userId, this.service});
 
   final String userId;
+  final VerificationService? service;
+
+  @override
+  State<VerificationDetailsScreen> createState() => _VerificationDetailsScreenState();
+}
+
+class _VerificationDetailsScreenState extends State<VerificationDetailsScreen> {
+  late final VerificationService _service = widget.service ?? VerificationService();
+  VerificationRequirements _requirements = VerificationRequirements.fallback;
+  bool _emailSent = false;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  /// Re-reads the sign-in (an email link opens outside the app) and lets the backend recompute Basic.
+  Future<void> _refresh() async {
+    try {
+      await fb.FirebaseAuth.instance.currentUser?.reload();
+      await _service.refreshContact();
+      final req = await _service.requirements();
+      if (mounted) setState(() => _requirements = req);
+    } catch (_) {
+      // Offline or signed out: the screen still shows the last recorded state.
+    }
+  }
+
+  Future<void> _sendEmail() async {
+    setState(() => _busy = true);
+    try {
+      await AuthService.instance.sendEmailVerification();
+      if (mounted) setState(() => _emailSent = true);
+    } catch (_) {
+      _toast("We couldn't send the email. Wait a minute and try again.");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _verifyPhone() async {
+    final done = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _PhoneLinkSheet(),
+    );
+    if (done == true) await _refresh();
+  }
+
+  String _levelTitle(String? level) {
+    switch (level) {
+      case 'professional':
+        return 'Professional verified';
+      case 'standard':
+        return 'Identity verified';
+      case 'basic':
+        return 'Basic: email and phone verified';
+      case 'elite':
+        return 'Elite verified';
+      default:
+        return 'Not verified yet';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final professional = _requirements.level('professional');
+    final email = fb.FirebaseAuth.instance.currentUser?.email;
     return Scaffold(
-      appBar: AppBar(title: const Text('Verification Status')),
-      body: FutureBuilder<DocumentSnapshot>(
-        // `verificationRequests` queries (list) are admin-only per Firestore
-        // rules — the owner's current status lives on `userVerifications/{uid}`,
-        // a single-doc get any authenticated user may read for their own uid
-        // (mirrors iOS `VerificationManager.loadUserVerification`).
-        future: FirebaseFirestore.instance
-            .collection('userVerifications')
-            .doc(userId)
-            .get(),
+      appBar: AppBar(title: const Text('Verification')),
+      body: StreamBuilder<VerificationRecord>(
+        stream: _service.watch(widget.userId),
         builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(child: Text('Error: ${snap.error}'));
-          }
-          if (!(snap.data?.exists ?? false)) {
-            return _NoVerificationView(userId: userId);
-          }
-          final data = snap.data!.data() as Map<String, dynamic>;
-          return _VerificationStatusView(data: data, userId: userId);
+          final record = snap.data ?? const VerificationRecord();
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  child: ListTile(
+                    leading: Icon(
+                      record.level == null ? Icons.shield_outlined : Icons.verified_user_rounded,
+                      color: record.level == null ? Colors.grey : Colors.green,
+                      size: 32,
+                    ),
+                    title: Text(_levelTitle(record.level),
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: const Text('Each check below is reviewed separately.'),
+                  ),
+                ),
+                const _SectionTitle('Contact (automatic)'),
+                _CheckCard(
+                  title: 'Email',
+                  detail: email ?? 'No email on this account',
+                  section: record.email,
+                  actions: record.email.status == VerificationSectionStatus.approved
+                      ? const []
+                      : [
+                          TextButton(
+                            onPressed: _busy ? null : _sendEmail,
+                            child: Text(_emailSent ? 'Email sent. Tap to resend' : 'Send verification email'),
+                          ),
+                          TextButton(onPressed: _refresh, child: const Text("I've verified it. Refresh")),
+                        ],
+                ),
+                _CheckCard(
+                  title: 'Phone',
+                  detail: record.phone.address ?? 'Confirm your number with a text message',
+                  section: record.phone,
+                  actions: record.phone.status == VerificationSectionStatus.approved
+                      ? const []
+                      : [TextButton(onPressed: _verifyPhone, child: const Text('Verify phone number'))],
+                ),
+                const _SectionTitle('Identity'),
+                _CheckCard(
+                  title: 'Government ID',
+                  detail: 'One government-issued photo ID, reviewed by our team.',
+                  section: record.identity,
+                  actions: !record.identity.status.canSubmit
+                      ? const []
+                      : record.contactVerified
+                          ? [
+                              FilledButton(
+                                onPressed: () => _openFlow('identity'),
+                                child: Text(record.identity.status == VerificationSectionStatus.notStarted
+                                    ? 'Submit your ID'
+                                    : 'Submit again'),
+                              ),
+                            ]
+                          : const [Text('Verify your email and phone first.', style: TextStyle(color: Colors.grey))],
+                ),
+                if (professional?.available == true) ...[
+                  const _SectionTitle('Professional'),
+                  _CheckCard(
+                    title: professional!.documents.isNotEmpty
+                        ? professional.documents.first.label
+                        : 'Professional credential',
+                    detail: 'Needs a verified identity. Reviewed by our team.',
+                    section: record.professional,
+                    actions: !record.professional.status.canSubmit
+                        ? const []
+                        : record.identity.status == VerificationSectionStatus.approved
+                            ? [
+                                FilledButton(
+                                  onPressed: () => _openFlow('professional'),
+                                  child: Text(record.professional.status == VerificationSectionStatus.notStarted
+                                      ? 'Submit credential'
+                                      : 'Submit again'),
+                                ),
+                              ]
+                            : const [Text('Verify your identity first.', style: TextStyle(color: Colors.grey))],
+                  ),
+                ],
+                const _SectionTitle('Elite'),
+                const Card(
+                  child: ListTile(
+                    leading: Icon(Icons.lock_outline, color: Colors.grey),
+                    title: Text('Not available yet', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Text("Elite needs a background check, which we don't offer yet."),
+                  ),
+                ),
+              ],
+            ),
+          );
         },
       ),
     );
   }
-}
 
-class _NoVerificationView extends StatelessWidget {
-  const _NoVerificationView({required this.userId});
-  final String userId;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.verified_user_outlined,
-              size: 72, color: AppColors.textSecondary),
-          const SizedBox(height: 20),
-          const Text(
-            'Not Yet Verified',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Get verified to build trust and unlock premium features.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textSecondary),
-          ),
-          const SizedBox(height: 32),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => EnhancedVerificationScreen(userId: userId),
-            )),
-            icon: const Icon(Icons.verified),
-            label: const Text('Start Verification'),
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              minimumSize: const Size.fromHeight(50),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => VerificationRewardsScreen(userId: userId),
-            )),
-            child: const Text('Learn about benefits →'),
-          ),
-        ],
-      ),
-    );
+  Future<void> _openFlow(String type) async {
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => EnhancedVerificationScreen(userId: widget.userId, requestType: type),
+    ));
   }
 }
 
-class _VerificationStatusView extends StatelessWidget {
-  const _VerificationStatusView(
-      {required this.data, required this.userId});
-  final Map<String, dynamic> data;
-  final String userId;
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 20, 4, 6),
+        child: Text(text.toUpperCase(),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+      );
+}
+
+class _CheckCard extends StatelessWidget {
+  const _CheckCard({required this.title, required this.detail, required this.section, this.actions = const []});
+
+  final String title;
+  final String detail;
+  final VerificationSection section;
+  final List<Widget> actions;
+
+  String _date(DateTime d) => '${d.day}/${d.month}/${d.year}';
 
   @override
   Widget build(BuildContext context) {
-    final status = data['status'] as String? ?? 'pending';
-    final level = data['level'] as String? ?? 'standard';
-    final docs = (data['documentUrls'] as List?)?.cast<String>() ?? [];
-    final ts = data['createdAt'];
-    DateTime? createdAt;
-    if (ts is Timestamp) createdAt = ts.toDate();
-
-    // Admin approvals write status: 'verified' (see AdminRepository); iOS's
-    // own banner checks both spellings for exactly this reason — matching
-    // only 'approved' here made every actually-approved user see "Rejected".
-    final isApproved = status == 'approved' || status == 'verified';
-    final isPending = status == 'pending';
-    final color = isApproved
-        ? Colors.green
-        : isPending
-            ? Colors.orange
-            : Colors.red;
-    final statusLabel = isApproved
-        ? 'Verified'
-        : isPending
-            ? 'Under Review'
-            : 'Not Approved';
-    final statusIcon = isApproved
-        ? Icons.verified
-        : isPending
-            ? Icons.hourglass_empty
-            : Icons.cancel;
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Status hero
-          Center(
-            child: Column(
+    final status = section.status;
+    final feedback = (status == VerificationSectionStatus.rejected ||
+            status == VerificationSectionStatus.requiresResubmission) &&
+        (section.note ?? '').isNotEmpty;
+    final exp = section.expiresAt;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.12),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(statusIcon, color: color, size: 40),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  statusLabel,
-                  style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: color),
-                ),
-                if (createdAt != null)
-                  Text(
-                    'Submitted ${_formatDate(createdAt)}',
-                    style: TextStyle(
-                        fontSize: 13, color: AppColors.textSecondary),
-                  ),
+                Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w700))),
+                Icon(status.icon, size: 16, color: status.color),
+                const SizedBox(width: 4),
+                Text(status.label, style: TextStyle(fontSize: 12, color: status.color)),
               ],
             ),
-          ),
-          const SizedBox(height: 28),
-          // Details
-          _DetailRow(label: 'Level', value: _capitalise(level)),
-          _DetailRow(label: 'Status', value: statusLabel),
-          _DetailRow(
-              label: 'Documents', value: '${docs.length} uploaded'),
-          if (isPending)
-            _DetailRow(
-                label: 'Processing Time', value: '1–3 business days'),
-          const SizedBox(height: 24),
-          if (status == 'rejected') ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
+            const SizedBox(height: 4),
+            Text(detail, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            if (feedback)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('Feedback: ${section.note}',
+                    style: const TextStyle(fontSize: 12, color: Colors.orange)),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.red, size: 18),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Your verification could not be approved at this time. Review the feedback and submit again.',
-                          style:
-                              TextStyle(fontSize: 13, color: Colors.red),
-                        ),
-                      ),
-                    ],
-                  ),
-                  // `reviewNotes` — admin-supplied rejection reason (see
-                  // AdminRepository.updateVerificationRequestStatus).
-                  if ((data['reviewNotes'] as String?)?.isNotEmpty ==
-                      true) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      data['reviewNotes'] as String,
-                      style: const TextStyle(
-                          fontSize: 13, color: Colors.red, height: 1.4),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        EnhancedVerificationScreen(userId: userId),
-                  ),
+            if (exp != null && (status == VerificationSectionStatus.approved || status == VerificationSectionStatus.expired))
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  status == VerificationSectionStatus.expired
+                      ? 'Expired ${_date(exp)}'
+                      : 'Valid until ${_date(exp)}',
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                 ),
-                child: const Text('Resubmit Verification'),
               ),
-            ),
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 4, children: actions),
+            ],
           ],
-          if (isApproved) ...[
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => VerificationRewardsScreen(userId: userId),
-                  ),
-                ),
-                icon: const Icon(Icons.card_giftcard),
-                label: const Text('View Your Rewards'),
-              ),
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }
-
-  String _formatDate(DateTime d) =>
-      '${d.day}/${d.month}/${d.year}';
-
-  String _capitalise(String s) =>
-      s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
 }
 
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
-  final String label;
-  final String value;
+/// Asks for a phone number, texts a code, and attaches the number to the signed-in account.
+class _PhoneLinkSheet extends StatefulWidget {
+  const _PhoneLinkSheet();
+
+  @override
+  State<_PhoneLinkSheet> createState() => _PhoneLinkSheetState();
+}
+
+class _PhoneLinkSheetState extends State<_PhoneLinkSheet> {
+  final _number = TextEditingController();
+  final _code = TextEditingController();
+  bool _codeSent = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _number.dispose();
+    _code.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final n = _number.text.trim();
+    if (!n.startsWith('+') || n.length < 8) {
+      setState(() => _error = 'Enter the number with its country code, for example +1 876 555 0100.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    await AuthService.instance.startPhoneLink(
+      phoneNumber: n,
+      codeSent: () {
+        if (mounted) setState(() {
+          _codeSent = true;
+          _busy = false;
+        });
+      },
+      failed: (e) {
+        if (mounted) setState(() {
+          _busy = false;
+          _error = AuthService.verificationFailureMessage(e);
+        });
+      },
+      linkedAutomatically: () {
+        if (mounted) Navigator.of(context).pop(true);
+      },
+    );
+  }
+
+  Future<void> _confirm() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await AuthService.instance.confirmPhoneLink(_code.text);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (e) {
+      if (mounted) setState(() {
+        _busy = false;
+        _error = AuthService.verificationFailureMessage(e);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Row(
+      padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const Text('Verify phone number', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          const Text("We'll text a 6-digit code to confirm you can receive messages on this number.",
+              style: TextStyle(color: AppColors.textSecondary)),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _number,
+            enabled: !_codeSent,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(labelText: 'Phone number', hintText: '+1 876 555 0100', border: OutlineInputBorder()),
+          ),
+          if (_codeSent) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _code,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: '6-digit code', border: OutlineInputBorder()),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+          ],
+          const SizedBox(height: 14),
           SizedBox(
-            width: 130,
-            child: Text(label,
-                style: TextStyle(color: AppColors.textSecondary)),
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _busy ? null : (_codeSent ? _confirm : _send),
+              child: _busy
+                  ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(_codeSent ? 'Verify code' : 'Send code'),
+            ),
           ),
-          Expanded(
-            child: Text(value,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w600)),
-          ),
+          if (_codeSent)
+            TextButton(
+              onPressed: _busy ? null : () => setState(() {
+                    _codeSent = false;
+                    _code.clear();
+                  }),
+              child: const Text('Use a different number'),
+            ),
         ],
       ),
     );

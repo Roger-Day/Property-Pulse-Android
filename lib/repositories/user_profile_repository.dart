@@ -372,25 +372,6 @@ class UserProfileRepository {
     });
   }
 
-  /// KYC / identity verification request (mirrors iOS `verificationRequests` flow).
-  Future<void> submitVerificationRequest({
-    required String userId,
-    required String documentDownloadUrl,
-    String? note,
-  }) async {
-    await _db.collection(AppConstants.verificationRequestsCollection).add({
-      'userId': userId,
-      'status': 'pending',
-      'documentUrl': documentDownloadUrl,
-      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
-      // submittedAt mirrors iOS VerificationRequest.submittedAt — used by iOS
-      // admin dashboard for ordering and by VerificationManager queries.
-      'submittedAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
-  }
-
   Future<Map<String, dynamic>> getNotificationSettings(String userId) async {
     final doc =
         await _db.collection(AppConstants.usersCollection).doc(userId).get();

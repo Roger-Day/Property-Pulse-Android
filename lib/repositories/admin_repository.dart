@@ -56,10 +56,19 @@ class AdminRepository {
   static bool isAdminApplication(Map<String, dynamic> d) =>
       (d['type'] as String?) == 'admin_role_interest';
 
+  /// A request filed through the backend (`submitVerificationRequest`): its evidence is private
+  /// storage paths viewed through short-lived links, and it is decided by `reviewVerificationRequest`.
+  static bool isBackendRequest(Map<String, dynamic> d) => d['source'] == 'v2';
+
   static bool isIdentityVerification(Map<String, dynamic> d) {
     if (isAdminApplication(d)) return false;
+    if (isBackendRequest(d)) return true;
+    // Both older submission shapes: one `documentUrl`, or a `documentUrls` list. (The list
+    // shape used to be left out, so those requests never showed up for review.)
     final url = d['documentUrl'] as String?;
-    return url != null && url.isNotEmpty;
+    if (url != null && url.isNotEmpty) return true;
+    final urls = d['documentUrls'];
+    return urls is List && urls.isNotEmpty;
   }
 
   /// Updates a `verificationRequests` document status and — when approving —

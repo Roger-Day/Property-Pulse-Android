@@ -98,6 +98,91 @@ class AuthService {
     return _auth.signInWithCredential(credential);
   }
 
+  String? _phoneLinkVerificationId;
+
+  /// Sends an SMS code to confirm a number for the account that is ALREADY signed in
+  /// (as opposed to [verifyPhoneNumber], which signs in with a phone). On success the
+  /// number is attached to the account, which is what the backend reads as "phone verified".
+  Future<void> startPhoneLink({
+    required String phoneNumber,
+    required void Function() codeSent,
+    required void Function(FirebaseAuthException e) failed,
+    void Function()? linkedAutomatically,
+  }) async {
+    _phoneLinkVerificationId = null;
+    await _auth.verifyPhoneNumber(
+      phoneNumber: phoneNumber.trim(),
+      timeout: const Duration(seconds: 90),
+      verificationCompleted: (PhoneAuthCredential credential) async {
+        try {
+          await _applyPhoneCredential(credential);
+          linkedAutomatically?.call();
+        } on FirebaseAuthException catch (e) {
+          failed(e);
+        }
+      },
+      verificationFailed: failed,
+      codeSent: (String verificationId, int? resendToken) {
+        _phoneLinkVerificationId = verificationId;
+        codeSent();
+      },
+      codeAutoRetrievalTimeout: (String verificationId) {
+        _phoneLinkVerificationId = verificationId;
+      },
+    );
+  }
+
+  Future<void> confirmPhoneLink(String smsCode) async {
+    final id = _phoneLinkVerificationId;
+    if (id == null || id.isEmpty) {
+      throw FirebaseAuthException(
+        code: 'missing-verification-id',
+        message: 'Request an SMS code first.',
+      );
+    }
+    await _applyPhoneCredential(
+      PhoneAuthProvider.credential(verificationId: id, smsCode: smsCode.trim()),
+    );
+    _phoneLinkVerificationId = null;
+  }
+
+  Future<void> _applyPhoneCredential(PhoneAuthCredential credential) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw FirebaseAuthException(code: 'no-current-user', message: 'Sign in first.');
+    }
+    final hasPhone = user.providerData.any((p) => p.providerId == 'phone');
+    if (hasPhone) {
+      await user.updatePhoneNumber(credential);
+    } else {
+      await user.linkWithCredential(credential);
+    }
+  }
+
+  /// Plain-language text for a phone / email verification failure.
+  static String verificationFailureMessage(Object error) {
+    final code = error is FirebaseAuthException ? error.code : '';
+    switch (code) {
+      case 'invalid-phone-number':
+        return "That phone number isn't valid. Include the country code, for example +1 876 555 0100.";
+      case 'invalid-verification-code':
+        return "That code isn't right. Check the SMS and try again.";
+      case 'session-expired':
+      case 'code-expired':
+        return 'That code has expired. Request a new one.';
+      case 'too-many-requests':
+      case 'quota-exceeded':
+        return 'Too many attempts. Wait a few minutes and try again.';
+      case 'credential-already-in-use':
+      case 'provider-already-linked':
+        return 'That number is already linked to another account.';
+      case 'requires-recent-login':
+        return 'For security, sign out and back in, then try again.';
+      default:
+        return "We couldn't verify that number. Please try again.";
+    }
+  }
+
   void clearPhoneVerificationId() {
     _phoneVerificationId = null;
   }

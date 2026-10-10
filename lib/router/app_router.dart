@@ -32,7 +32,6 @@ import '../screens/profile/region_picker_screen.dart';
 import '../screens/profile/appointments_screen.dart';
 import '../screens/profile/change_password_screen.dart';
 import '../screens/profile/edit_profile_screen.dart';
-import '../screens/profile/identity_verification_screen.dart';
 import '../screens/profile/verification_details_screen.dart';
 import '../screens/profile/appointment_scheduling_screen.dart';
 import '../screens/profile/create_listing_entry_screen.dart';
