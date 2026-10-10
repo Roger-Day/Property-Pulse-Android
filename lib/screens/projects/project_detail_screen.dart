@@ -138,11 +138,86 @@ Future<void> _confirmDeleteProject(
   }
 }
 
+/// The "More" menu in a development's app bar: everything except Leads. Only the actions the
+/// person is allowed to use are listed, and the button is not shown when there are none.
+@visibleForTesting
+class ProjectActionsMenu extends StatelessWidget {
+  const ProjectActionsMenu({
+    super.key,
+    required this.inventory,
+    required this.team,
+    required this.edit,
+    required this.delete,
+    required this.onInventory,
+    required this.onTeam,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final bool inventory;
+  final bool team;
+  final bool edit;
+  final bool delete;
+  final VoidCallback onInventory;
+  final VoidCallback onTeam;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  PopupMenuItem<String> _item(String value, IconData icon, String label, {Color? color}) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!(inventory || team || edit || delete)) return const SizedBox.shrink();
+    return PopupMenuButton<String>(
+      tooltip: 'More actions',
+      icon: const Icon(Icons.more_vert),
+      onSelected: (value) {
+        switch (value) {
+          case 'inventory':
+            onInventory();
+          case 'team':
+            onTeam();
+          case 'edit':
+            onEdit();
+          case 'delete':
+            onDelete();
+        }
+      },
+      itemBuilder: (_) => [
+        if (inventory) _item('inventory', Icons.grid_view, 'Manage inventory'),
+        if (team) _item('team', Icons.group_add_outlined, 'Manage team'),
+        if (edit) _item('edit', Icons.edit_outlined, 'Edit development'),
+        if (edit && delete) const PopupMenuDivider(),
+        if (delete) _item('delete', Icons.delete_outline, 'Delete development', color: Colors.red.shade700),
+      ],
+    );
+  }
+}
+
 class _ProjectDetailBody extends StatelessWidget {
   const _ProjectDetailBody({required this.project});
 
   final ProjectModel project;
 
+  // Five icons in a row squeezed the title. Leads stays one tap away; the rest live in a menu.
   List<Widget> _toolbarActions(
     BuildContext context,
     _ToolbarPermissions p,
@@ -158,36 +233,16 @@ class _ProjectDetailBody extends StatelessWidget {
             context.push('/development/$id/leads', extra: name);
           },
         ),
-      if (p.inventory)
-        IconButton(
-          tooltip: 'Manage inventory',
-          icon: const Icon(Icons.grid_view),
-          onPressed: () {
-            context.push('/development/$id/inventory');
-          },
-        ),
-      if (p.team)
-        IconButton(
-          tooltip: 'Team',
-          icon: const Icon(Icons.group_add_outlined),
-          onPressed: () {
-            context.push('/development/$id/team');
-          },
-        ),
-      if (p.edit)
-        IconButton(
-          tooltip: 'Edit',
-          icon: const Icon(Icons.edit_outlined),
-          onPressed: () {
-            context.push('/development/$id/edit');
-          },
-        ),
-      if (p.delete)
-        IconButton(
-          tooltip: 'Delete',
-          icon: const Icon(Icons.delete_outline),
-          color: Colors.red.shade700,
-          onPressed: () => _confirmDeleteProject(context, project),
+      if (p.inventory || p.team || p.edit || p.delete)
+        ProjectActionsMenu(
+          inventory: p.inventory,
+          team: p.team,
+          edit: p.edit,
+          delete: p.delete,
+          onInventory: () => context.push('/development/$id/inventory'),
+          onTeam: () => context.push('/development/$id/team'),
+          onEdit: () => context.push('/development/$id/edit'),
+          onDelete: () => _confirmDeleteProject(context, project),
         ),
     ];
   }
