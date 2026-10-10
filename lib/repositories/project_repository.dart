@@ -134,6 +134,7 @@ class ProjectRepository {
   Stream<List<ProjectModel>> watchHomeProjects() {
     return _db
         .collection(AppConstants.projectsCollection)
+        .where('moderationStatus', isEqualTo: 'approved')
         .orderBy('createdAt', descending: true)
         .limit(50)
         .snapshots()
@@ -153,6 +154,7 @@ class ProjectRepository {
   Stream<List<ProjectModel>> watchBrowseProjects() {
     return _db
         .collection(AppConstants.projectsCollection)
+        .where('moderationStatus', isEqualTo: 'approved')
         .orderBy('createdAt', descending: true)
         .limit(120)
         .snapshots()
@@ -174,8 +176,11 @@ class ProjectRepository {
     int limit = 50,
     DocumentSnapshot<Map<String, dynamic>>? startAfter,
   }) async {
+    // Approved projects only (index: moderationStatus + createdAt). Pending and rejected ones are
+    // not downloaded, which lets the security rules stop serving them to non-owners.
     Query<Map<String, dynamic>> q = _db
         .collection(AppConstants.projectsCollection)
+        .where('moderationStatus', isEqualTo: 'approved')
         .orderBy('createdAt', descending: true)
         .limit(limit);
 
@@ -1110,6 +1115,7 @@ class ProjectRepository {
     final snap = await _db
         .collection(AppConstants.projectsCollection)
         .where('developerId', isEqualTo: trimmed)
+        .where('moderationStatus', isEqualTo: 'approved')
         .limit(80)
         .get();
     final out = <ProjectModel>[];
