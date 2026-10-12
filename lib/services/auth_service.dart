@@ -159,6 +159,22 @@ class AuthService {
     }
   }
 
+  /// Turns what a person typed into the international form Firebase needs, or null when it can't be
+  /// one. Accepts `+1 876 555 0100`, `876-555-0100`, `(876) 555 0100` and `1 876 555 0100`. A bare
+  /// 10-digit Jamaican number (area code 876 or 658) gets +1; any other bare number needs its own `+`.
+  static String? normalizePhoneNumber(String input) {
+    final trimmed = input.trim();
+    final digits = trimmed.replaceAll(RegExp(r'[^0-9]'), '');
+    if (trimmed.startsWith('+')) {
+      return digits.length >= 8 && digits.length <= 15 ? '+$digits' : null;
+    }
+    if (digits.length == 10 && (digits.startsWith('876') || digits.startsWith('658'))) {
+      return '+1$digits';
+    }
+    if (digits.length == 11 && digits.startsWith('1')) return '+$digits';
+    return null;
+  }
+
   /// Plain-language text for a phone / email verification failure.
   static String verificationFailureMessage(Object error) {
     final code = error is FirebaseAuthException ? error.code : '';
@@ -178,6 +194,15 @@ class AuthService {
         return 'That number is already linked to another account.';
       case 'requires-recent-login':
         return 'For security, sign out and back in, then try again.';
+      case 'network-request-failed':
+        return 'No connection. Check your internet and try again.';
+      case 'operation-not-allowed':
+        return "Phone verification isn't switched on yet. Please contact support.";
+      case 'captcha-check-failed':
+      case 'app-not-authorized':
+      case 'missing-client-identifier':
+      case 'invalid-app-credential':
+        return "We couldn't confirm this device to send the text. Update the app and try again.";
       default:
         return "We couldn't verify that number. Please try again.";
     }

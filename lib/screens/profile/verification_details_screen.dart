@@ -300,9 +300,10 @@ class _PhoneLinkSheetState extends State<_PhoneLinkSheet> {
   }
 
   Future<void> _send() async {
-    final n = _number.text.trim();
-    if (!n.startsWith('+') || n.length < 8) {
-      setState(() => _error = 'Enter the number with its country code, for example +1 876 555 0100.');
+    final n = AuthService.normalizePhoneNumber(_number.text);
+    if (n == null) {
+      setState(() => _error =
+          "That doesn't look like a phone number. Use 876 555 0100, or include your country code, for example +44 7700 900123.");
       return;
     }
     setState(() {
@@ -355,14 +356,14 @@ class _PhoneLinkSheetState extends State<_PhoneLinkSheet> {
         children: [
           const Text('Verify phone number', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
-          const Text("We'll text a 6-digit code to confirm you can receive messages on this number.",
+          const Text("We'll text a 6-digit code to confirm you can receive messages on this number. Jamaican numbers can be typed as 876 555 0100.",
               style: TextStyle(color: AppColors.textSecondary)),
           const SizedBox(height: 14),
           TextField(
             controller: _number,
             enabled: !_codeSent,
             keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(labelText: 'Phone number', hintText: '+1 876 555 0100', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'Phone number', hintText: '876 555 0100', border: OutlineInputBorder()),
           ),
           if (_codeSent) ...[
             const SizedBox(height: 12),
