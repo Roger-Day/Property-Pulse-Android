@@ -252,6 +252,17 @@ class PropertyModel {
     return '$city, $state';
   }
 
+  /// The postal code if it is a real one. Blank, punctuation-only and all-zero values ("00", "000") are
+  /// the filler people typed when a ZIP was compulsory, so they are treated as no postal code.
+  String get postalCodeForDisplay {
+    final t = zipCode.trim();
+    if (!RegExp(r'[A-Za-z0-9]').hasMatch(t)) return '';
+    final hasLetter = RegExp(r'[A-Za-z]').hasMatch(t);
+    final digits = t.replaceAll(RegExp(r'[^0-9]'), '');
+    if (!hasLetter && digits.replaceAll('0', '').isEmpty) return '';
+    return t;
+  }
+
   /// Fuller address for home-screen cards — mirrors the iOS HomePropertyCard
   /// subtitle: "Street, City, State Zip" (omits empty parts gracefully).
   String get homeLocationLine {
@@ -262,20 +273,24 @@ class PropertyModel {
     ];
     if (parts.isEmpty) return '';
     final line = parts.join(', ');
-    return zipCode.isNotEmpty ? '$line $zipCode' : line;
+    final zip = postalCodeForDisplay;
+    return zip.isNotEmpty ? '$line $zip' : line;
   }
 
   String get fullAddress {
-    final firstLine = [
+    final cityAndState = [
+      if (city.isNotEmpty) city,
+      if (state.isNotEmpty) state,
+    ].join(', ');
+    final zip = postalCodeForDisplay;
+    final secondLine = [
+      if (cityAndState.isNotEmpty) cityAndState,
+      if (zip.isNotEmpty) zip,
+    ].join(' ');
+    return [
       if (street.isNotEmpty) street,
-      if (city.isNotEmpty || state.isNotEmpty || zipCode.isNotEmpty)
-        [
-          if (city.isNotEmpty) city,
-          if (state.isNotEmpty) state,
-          if (zipCode.isNotEmpty) zipCode,
-        ].join(', ').replaceFirst(', $zipCode', ' $zipCode'),
-    ].where((part) => part.isNotEmpty).toList();
-    return firstLine.join('\n');
+      if (secondLine.isNotEmpty) secondLine,
+    ].join('\n');
   }
 
   String get displayPropertyType {

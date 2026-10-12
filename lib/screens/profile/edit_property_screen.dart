@@ -719,9 +719,8 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
                             flex: 2,
                             child: ListingFormField(
                               controller: _zipCtrl,
-                              label: 'ZIP',
-                              hint: '10001',
-                              keyboardType: TextInputType.number,
+                              label: 'Postal code (optional)',
+                              keyboardType: TextInputType.text,
                             ),
                           ),
                         ],

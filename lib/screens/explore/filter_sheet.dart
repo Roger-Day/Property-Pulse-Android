@@ -431,9 +431,9 @@ class _FilterSheetState extends State<FilterSheet> {
         const SizedBox(height: 10),
         _LocationField(
           ctrl: _zipCtrl,
-          label: 'ZIP Code',
+          label: 'Postal code',
           icon: Icons.pin_outlined,
-          keyboardType: TextInputType.number,
+          keyboardType: TextInputType.text,
         ),
       ],
     );

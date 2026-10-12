@@ -521,9 +521,9 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
     }
     if (_streetCtrl.text.trim().isEmpty ||
         _cityCtrl.text.trim().isEmpty ||
-        _stateCtrl.text.trim().isEmpty ||
-        _zipCtrl.text.trim().isEmpty) {
-      await _showErrorAlert('Please fill in all address fields.');
+        _stateCtrl.text.trim().isEmpty) {
+      // The postal code is optional: many countries (Jamaica among them) have no ZIP codes.
+      await _showErrorAlert('Please fill in the street, city and state.');
       if (mounted) setState(() => _canSave = true);
       return;
     }
@@ -1004,9 +1004,8 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
                                 flex: 2,
                                 child: ListingFormField(
                                   controller: _zipCtrl,
-                                  label: 'ZIP',
-                                  hint: '10001',
-                                  keyboardType: TextInputType.number,
+                                  label: 'Postal code (optional)',
+                                  keyboardType: TextInputType.text,
                                 ),
                               ),
                             ],

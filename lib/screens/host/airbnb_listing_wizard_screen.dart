@@ -171,8 +171,7 @@ class _AirbnbListingWizardScreenState
       case _WizardStep.location:
         return _streetCtrl.text.trim().isNotEmpty &&
             _cityCtrl.text.trim().isNotEmpty &&
-            _stateCtrl.text.trim().isNotEmpty &&
-            _zipCtrl.text.trim().isNotEmpty;
+            _stateCtrl.text.trim().isNotEmpty;
       case _WizardStep.guestCapacity:
         return _maxGuests >= 1;
       case _WizardStep.rooms:
@@ -713,8 +712,8 @@ class _LocationStep extends StatelessWidget {
         const SizedBox(height: 12),
         _Field(
             ctrl: zipCtrl,
-            label: 'ZIP code',
-            keyboardType: TextInputType.number,
+            label: 'Postal code (optional)',
+            keyboardType: TextInputType.text,
             onChanged: onChanged),
       ],
     );
