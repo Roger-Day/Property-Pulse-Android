@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:property_pulse/services/auth_service.dart';
 
@@ -29,9 +30,14 @@ void main() {
     }
   });
 
-  test('failures read as sentences', () {
-    String msg(String code) => AuthService.verificationFailureMessage(Exception(code));
-    // Non-Firebase errors fall back to the generic sentence.
-    expect(msg('x'), contains("couldn't verify that number"));
+  test('failures read as sentences, and an unknown one names its code', () {
+    FirebaseAuthException e(String code) => FirebaseAuthException(code: code);
+    String msg(Object err) => AuthService.verificationFailureMessage(err);
+    expect(msg(e('invalid-phone-number')), contains('country code'));
+    expect(msg(e('too-many-requests')), contains('Too many attempts'));
+    expect(msg(e('network-request-failed')), contains('No connection'));
+    expect(msg(e('operation-not-allowed')), contains("isn't switched on"));
+    expect(msg(e('internal-error')), contains('(error: internal-error)'));
+    expect(msg(Exception('x')), "We couldn't verify that number. Please try again.");
   });
 }

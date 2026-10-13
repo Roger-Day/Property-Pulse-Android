@@ -204,7 +204,10 @@ class AuthService {
       case 'invalid-app-credential':
         return "We couldn't confirm this device to send the text. Update the app and try again.";
       default:
-        return "We couldn't verify that number. Please try again.";
+        // The code makes a failure traceable (a tester can read it out) without exposing anything private.
+        return code.isEmpty
+            ? "We couldn't verify that number. Please try again."
+            : "We couldn't verify that number (error: $code). Please try again.";
     }
   }
 
