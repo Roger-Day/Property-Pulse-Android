@@ -70,7 +70,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
       prefs: prefs,
     );
 
-    var versionLabel = 'Version 1.0.0';
+    var versionLabel = 'Version';
     try {
       final pkg = await PackageInfo.fromPlatform();
       versionLabel = 'Version ${pkg.version} (${pkg.buildNumber})';

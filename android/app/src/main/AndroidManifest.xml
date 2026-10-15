@@ -8,30 +8,33 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <!-- Required by image_picker on Android 13+ -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <!-- Required by speech_to_text (voice search — mirrors iOS SFSpeechRecognizer) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- Legacy external storage — used on API < 33 -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- app_badge_plus declares a permission for each phone maker's launcher badge API.
+         Play flags that list in review and the stock Android 8+ notification dot needs
+         none of them, so they are removed from the merged manifest. -->
+    <uses-permission android:name="com.sec.android.provider.badge.permission.READ" tools:node="remove" />
+    <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE" tools:node="remove" />
+    <uses-permission android:name="com.htc.launcher.permission.READ_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="com.htc.launcher.permission.UPDATE_SHORTCUT" tools:node="remove" />
+    <uses-permission android:name="com.sonyericsson.home.permission.BROADCAST_BADGE" tools:node="remove" />
+    <uses-permission android:name="com.sonymobile.home.permission.PROVIDER_INSERT_BADGE" tools:node="remove" />
+    <uses-permission android:name="com.anddoes.launcher.permission.UPDATE_COUNT" tools:node="remove" />
+    <uses-permission android:name="com.majeur.launcher.permission.UPDATE_BADGE" tools:node="remove" />
+    <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" tools:node="remove" />
+    <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="com.hihonor.android.launcher.permission.CHANGE_BADGE " tools:node="remove" /><!-- the plugin's own declaration has a trailing space -->
+    <uses-permission android:name="com.hihonor.android.launcher.permission.READ_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="com.hihonor.android.launcher.permission.WRITE_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="com.vivo.notification.permission.BADGE_ICON" tools:node="remove" />
 
-    <!-- app_badge_plus: OEM launcher badge support beyond the stock Android
-         8+ notification-dot API (which needs no extra permission). Missing
-         on a given device just means that OEM's badge silently no-ops —
-         these are inert unless the matching launcher is present. -->
-    <uses-permission android:name="com.sec.android.provider.badge.permission.READ" />
-    <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE" />
-    <uses-permission android:name="com.htc.launcher.permission.READ_SETTINGS" />
-    <uses-permission android:name="com.htc.launcher.permission.UPDATE_SHORTCUT" />
-    <uses-permission android:name="com.sonyericsson.home.permission.BROADCAST_BADGE" />
-    <uses-permission android:name="com.sonymobile.home.permission.PROVIDER_INSERT_BADGE" />
-    <uses-permission android:name="com.anddoes.launcher.permission.UPDATE_COUNT" />
-    <uses-permission android:name="com.majeur.launcher.permission.UPDATE_BADGE" />
-    <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" />
-    <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" />
-    <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" />
+    <!-- Firebase Analytics and Play services add the advertising ID permission. The app shows no
+         ads and does not use the advertising ID, so it is removed (keeps the Play "Advertising ID"
+         declaration at "No", matching the iOS privacy manifest). -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" tools:node="remove" />
 
     <application
         android:label="Property Pulse"
@@ -102,7 +105,10 @@
             android:value="property_pulse_default" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
-            android:resource="@mipmap/ic_launcher" />
+            android:resource="@drawable/ic_stat_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/notification_accent" />
 
         <!-- ── FileProvider (required by image_picker) ────────────────────── -->
         <provider

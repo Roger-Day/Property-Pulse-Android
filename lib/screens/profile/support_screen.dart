@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../constants/app_colors.dart';
 import '../../constants/app_constants.dart';
+import '../../utils/app_version.dart';
 import 'profile_subscreen_widgets.dart';
 
 /// Support, FAQ, About, and Data Export — mirrors iOS `SupportView`,
@@ -142,11 +143,14 @@ class SupportScreen extends StatelessWidget {
                   onTap: _requestReview,
                 ),
                 const Divider(height: 1, indent: 56),
-                const _LinkTile(
-                  icon: Icons.info_outline,
-                  label: 'App version',
-                  trailing: '1.0.0',
-                  onTap: null,
+                FutureBuilder<String>(
+                  future: AppVersion.label(),
+                  builder: (context, snapshot) => _LinkTile(
+                    icon: Icons.info_outline,
+                    label: 'App version',
+                    trailing: snapshot.data ?? '',
+                    onTap: null,
+                  ),
                 ),
               ],
             ),

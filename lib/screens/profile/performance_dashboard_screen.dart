@@ -7,10 +7,8 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import '../../constants/app_colors.dart';
 import '../../services/image_cache_manager.dart';
+import '../../utils/app_version.dart';
 import 'profile_subscreen_widgets.dart';
-
-/// Same label as Support About (`support_screen.dart`).
-const String _kPerformanceAppVersion = '1.0.0';
 
 /// Mirrors iOS `PerformanceDashboardView`: 2-column grid on wide layouts,
 /// scroll + Refresh; cards match Swift titles & metric rows & actions.
@@ -176,10 +174,13 @@ class _PerformanceDashboardScreenState extends State<PerformanceDashboardScreen>
             value: '${(m.cpuUsage * 100).toStringAsFixed(1)}%',
             valueColor: m.cpuUsage < 0.5 ? Colors.green : Colors.orange,
           ),
-          const _PerformanceRow(
-            title: 'App Version',
-            value: _kPerformanceAppVersion,
-            valueColor: Colors.grey,
+          FutureBuilder<String>(
+            future: AppVersion.label(),
+            builder: (context, snapshot) => _PerformanceRow(
+              title: 'App Version',
+              value: snapshot.data ?? '',
+              valueColor: Colors.grey,
+            ),
           ),
           if (defaultTargetPlatform == TargetPlatform.android)
             _PerformanceRow(
