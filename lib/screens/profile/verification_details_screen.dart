@@ -303,7 +303,7 @@ class _PhoneLinkSheetState extends State<_PhoneLinkSheet> {
     final n = AuthService.normalizePhoneNumber(_number.text);
     if (n == null) {
       setState(() => _error =
-          "That doesn't look like a phone number. Use 876 555 0100, or include your country code, for example +44 7700 900123.");
+          "We couldn't read that number. For a Jamaican number, use 876 555 0100. For any other country, start with + and the country code, for example +1 212 555 0100 (US or Canada) or +44 7700 900123 (UK).");
       return;
     }
     setState(() {
