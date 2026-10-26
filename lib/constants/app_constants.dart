@@ -90,7 +90,7 @@ class AppConstants {
   static const int clientSideTypeFilterPoolSize = 400;
   /// Pool fetched when a *milder* client-side-only filter is active (a
   /// single price/amenity/date/etc. constraint) — these typically keep a
-  /// meaningful fraction of a window, unlike the airbnb type mismatch or a
+  /// meaningful fraction of a window, unlike the short-stay type mismatch or a
   /// tight geo radius, which can exclude nearly all of it. Smaller than
   /// [clientSideTypeFilterPoolSize] to avoid paying that pool's full read
   /// cost on every ordinary filtered search.

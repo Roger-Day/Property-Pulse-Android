@@ -100,7 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Icons.home_outlined,
                 iconColor: Colors.teal,
                 title: 'Owner Plans',
-                subtitle: 'List more properties & Airbnb rentals',
+                subtitle: 'List more properties & short-stay rentals',
                 onTap: () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => const SubscriptionPlansScreen(
                       context: SubscriptionPlansContext.owner),

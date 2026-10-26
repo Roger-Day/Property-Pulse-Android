@@ -142,7 +142,7 @@ class _RequiredRoleScreenState extends State<RequiredRoleScreen> {
                 const SizedBox(height: 12),
                 _OptionCard(
                   title: 'I host short-stay properties',
-                  subtitle: 'List and manage Airbnb-style short-stay rentals',
+                  subtitle: 'List and manage short-stay rentals',
                   icon: Icons.cottage_rounded,
                   tint: const Color(0xFFED3D45),
                   onTap: () => _select('airbnbHost'),

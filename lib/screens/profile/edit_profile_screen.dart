@@ -14,6 +14,7 @@ import '../../widgets/role_switcher.dart';
 import '../../repositories/user_profile_repository.dart';
 import '../../services/auth_service.dart';
 import 'profile_subscreen_widgets.dart';
+import '../../utils/role_label.dart';
 
 /// Canonical role strings — matches iOS `UserRole` raw values.
 abstract final class ProfileRoleLabels {
@@ -25,6 +26,10 @@ abstract final class ProfileRoleLabels {
   static const admin = 'Admin';
 
   static const selectable = [seeker, owner, realtor, developer, airbnbHost];
+
+  /// What to show people. The stored value 'Airbnb Host' is what user documents and the Firestore
+  /// rules hold, so it stays; the screen shows a neutral label instead.
+  static String uiLabel(String stored) => roleUiLabel(stored);
 
   /// Maps any stored role variant to its display label.
   /// Returns null for unrecognised values — callers must NOT write a role
@@ -543,7 +548,7 @@ class _PersonalInfoCard extends StatelessWidget {
                   value: roleSelection,
                   items: [
                     for (final r in ProfileRoleLabels.selectable)
-                      DropdownMenuItem(value: r, child: Text(r)),
+                      DropdownMenuItem(value: r, child: Text(ProfileRoleLabels.uiLabel(r))),
                   ],
                   onChanged: (v) {
                     if (v != null) onRoleChanged(v);

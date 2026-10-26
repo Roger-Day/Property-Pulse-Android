@@ -59,7 +59,7 @@ class PPColors {
   static const Color typeCondo      = Color(0xFFAF52DE); // systemPurple
   static const Color typeTownhouse  = Color(0xFFFF9500); // systemOrange
   static const Color typeLand       = Color(0xFF8E6B3E); // systemBrown
-  static const Color typeAirbnb     = Color(0xFFFF5A5F); // Airbnb brand
+  static const Color typeAirbnb     = Color(0xFF0F766E); // short-stay accent
 
   // ── Property status colours ───────────────────────────────────────────────
   static const Color statusAvailable = Color(0xFF34C759);

@@ -67,7 +67,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   Future<List<PropertyModel>> _fetch() async {
     final listings =
         await context.read<UserProfileRepository>().getMyListings(widget.userId);
-    // Short-stay/Airbnb listings are managed via the Host Dashboard segment,
+    // Short-stay listings are managed via the Host Dashboard segment,
     // not here — mirrors iOS MyListingsView.loadMyListings's
     // `!$0.isShortStayHostListing` filter. Uses isShortStayHostListing (not
     // the broader isShortStayListing), which ignores stale airbnbInfo maps

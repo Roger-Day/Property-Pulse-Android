@@ -354,11 +354,11 @@ class PropertyRepository {
             .toList());
   }
 
-  /// Airbnb-style short-stay listings — listingType == 'airbnb'.
+  /// Short-stay listings — listingType == 'airbnb'.
   Stream<List<PropertyModel>> watchAirbnbListings() {
     // Same definition iOS uses for the home "Short Stays" section
     // (`Property.isShortStayHostListing`): listing type short_stay OR the
-    // legacy airbnb value, OR propertyType airbnb. This used to match only
+    // legacy short-stay value, OR propertyType short-stay. This used to match only
     // `listingType == 'airbnb'`, which is what the Android wizard writes; the
     // iOS wizard writes `short_stay`, so every iOS-created short stay was
     // missing from the home strip (and the strip hides itself when empty).
@@ -470,13 +470,13 @@ class PropertyRepository {
     // Firestore above, so the fetched window already contains only matching
     // docs. But "airbnb" is filtered entirely client-side (below), so a
     // 20-doc window pulled from the whole collection very likely contains no
-    // airbnb listings at all, making short-stay search return nothing even
+    // Short-stay listings at all, making short-stay search return nothing even
     // when plenty exist. Fetch a much larger pool in that case so the
-    // client-side airbnb (+ location/query/amenity) filters have a real
+    // client-side short-stay (+ location/query/amenity) filters have a real
     // population to narrow, then cap the survivors back to a page below.
     //
     // [limitOverride] is expressed as the desired *final* result count (a
-    // page-size multiple), not the raw fetch limit — for the airbnb pool it
+    // page-size multiple), not the raw fetch limit — for the short-stay pool it
     // scales the raw fetch proportionally so "load more" still has enough
     // raw docs to filter from, instead of shrinking the pool to the page size.
     final desiredResultCount = limitOverride ?? AppConstants.propertiesPageSize;
@@ -520,7 +520,7 @@ class PropertyRepository {
         filter.verifiedRealtorsOnly ||
         filter.dateFrom != null ||
         filter.dateTo != null;
-    // The airbnb type mismatch and a tight geo radius can each exclude
+    // The short-stay type mismatch and a tight geo radius can each exclude
     // nearly every doc in a window, so they keep the full (costlier) pool;
     // every other filter here is a single equality/range/toggle constraint
     // that typically keeps a much larger fraction, so it gets a smaller
@@ -739,7 +739,7 @@ class PropertyRepository {
       }
 
       // When a larger pool was fetched for a client-side-only type filter
-      // (airbnb), cap the sorted survivors back to the desired result count
+      // (short-stay), cap the sorted survivors back to the desired result count
       // (a page, or however many pages "load more" has requested) so callers
       // see the same result-count semantics as every other filtered search.
       // Applied AFTER the sort, so it keeps the most relevant/appropriate

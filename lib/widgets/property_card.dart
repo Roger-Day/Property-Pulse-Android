@@ -254,7 +254,7 @@ class _GridCompactPropertyCard extends StatelessWidget {
 
     return Semantics(
       label:
-          '${property.title}, ${property.propertyType}, $_priceText, ${property.city}',
+          '${property.title}, ${property.displayPropertyType}, $_priceText, ${property.city}',
       button: onTap != null,
       child: Card(
       elevation: 2,
@@ -784,7 +784,7 @@ class _TwoColumnCardBody extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 10),
-                // Trust score — iOS shows it for Airbnb always, else when present
+                // Trust score — iOS shows it for short-stay always, else when present
                 if (_isAirbnb || property.trustScore != null)
                   _TrustScorePill(score: property.trustScore ?? 70),
               ],

@@ -1,7 +1,7 @@
 /// Mirrors iOS `ListingExpirationPolicy.swift`.
 ///
 /// Terminology: Firestore field `expirationDate` corresponds to Swift `expiresAt`.
-/// Airbnb listings never expire (`null`). Rent / lease: 30 days; sale: 365 days.
+/// Short-stay listings never expire (`null`). Rent / lease: 30 days; sale: 365 days.
 abstract final class ListingExpirationPolicy {
   static const int rentExpirationDays = 30;
   static const int saleExpirationDays = 365;
@@ -25,7 +25,7 @@ abstract final class ListingExpirationPolicy {
     }
   }
 
-  /// Airbnb featured placement only (iOS `Property.featuredUntil` for Airbnb).
+  /// Short-stay featured placement only (iOS `Property.featuredUntil` for short-stay).
   static DateTime? airbnbFeaturedUntil({
     required bool isFeatured,
     required DateTime createdAt,

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
+import '../utils/role_label.dart';
 
 /// Mirrors iOS `RoleSwitchService` — validates, enforces cooldown,
 /// checks blocking conditions, and persists role changes atomically.
@@ -13,6 +14,13 @@ class RoleSwitchService {
     'developer',
     'airbnbHost',
   ];
+
+  /// Text for the screen. [displayName] is also the value written to Firestore ('Airbnb Host'),
+  /// so it cannot change; this is what people read.
+  static String uiLabel(String role) {
+    final name = displayName(role);
+    return roleUiLabel(name);
+  }
 
   static String displayName(String role) {
     switch (role.toLowerCase()) {

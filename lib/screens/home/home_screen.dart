@@ -262,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
 
-                // ── Airbnb Short Stays (iOS AirbnbStaysSection) ─────────
+                // ── short-stay Short Stays (iOS AirbnbStaysSection) ─────────
                 // Placed right after New Developments and before Most Viewed,
                 // matching the iOS home order.
                 SliverToBoxAdapter(
@@ -1120,7 +1120,7 @@ class _QuickActionsGrid extends StatelessWidget {
       builder: (context, profileSnap) {
         // "Add property" mirrors iOS QuickActionsSection: only realtor/
         // owner/admin see it — seekers, developers (who have their own
-        // "Projects" flow), and Airbnb hosts (their own listing wizard) don't.
+        // "Projects" flow), and short-stay hosts (their own listing wizard) don't.
         final role = profileSnap.data?.normalizedRole;
         final canAddProperty =
             isAdmin || role == 'realtor' || role == 'owner';
@@ -1840,7 +1840,7 @@ class _HomeMessage extends StatelessWidget {
   }
 }
 
-// ─── Airbnb Stays Section (iOS parity) ───────────────────────────────────────
+// ─── short-stay Stays Section (iOS parity) ───────────────────────────────────────
 
 class _AirbnbStaysSection extends StatelessWidget {
   const _AirbnbStaysSection({
@@ -1871,7 +1871,7 @@ class _AirbnbStaysSection extends StatelessWidget {
                           fontSize: 18, fontWeight: FontWeight.w600),
                     ),
                     Text(
-                      'Airbnb-style rentals for every trip',
+                      'Short-stay rentals for every trip',
                       style: TextStyle(
                           fontSize: 13, color: AppColors.textSecondary),
                     ),

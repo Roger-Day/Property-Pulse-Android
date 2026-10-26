@@ -25,7 +25,7 @@ This is a considered estimate from the verification evidence below, not an autom
 | Property Owner | ~93% | Owner subscription tiers are still "Coming Soon" (matches iOS, not a gap) but their copy is now correct; verification-status display bug (was showing false rejections) fixed. |
 | Realtor | ~90% | Core listing/lead flows solid; the `visibilityWeight` feed-ranking boost promised in Realtor Pro/Elite copy still has no Flutter implementation (deferred, §4). |
 | Developer | ~89% | The critical "paid for Pro/Growth, stayed capped at 1 project" bug is fixed this round; a client-side pre-submission limit check (nice-to-have, not required for correctness) remains deferred. |
-| Airbnb Host | ~93% | Listing wizard, cancellation policies, business rules all verified matching; boost-purchase now correctly respects the ops kill-switch. |
+| Short-Stay Host | ~93% | Listing wizard, cancellation policies, business rules all verified matching; boost-purchase now correctly respects the ops kill-switch. |
 | Admin | ~96% | Strongest role — Flutter's audit logging is a confirmed superset of iOS's, moderation drill-through exceeds iOS in places. |
 
 ## 3. What was found and fixed this round

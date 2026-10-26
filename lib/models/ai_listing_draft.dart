@@ -17,7 +17,7 @@ extension AiListingToneWireValue on AiListingTone {
         AiListingTone.professional => 'Professional',
         AiListingTone.luxury => 'Luxury',
         AiListingTone.family => 'Family',
-        AiListingTone.airbnb => 'Airbnb',
+        AiListingTone.airbnb => 'Short Stay',
         AiListingTone.investment => 'Investment',
       };
 }

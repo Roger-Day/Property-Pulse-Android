@@ -41,7 +41,7 @@ class PropertyModel {
     this.createdAt,
     this.isFeatured = false,
     this.featuredUntil,
-    /// Firestore `expirationDate` — non-Airbnb listing expiry (iOS `ListingExpirationPolicy`).
+    /// Firestore `expirationDate` — non-short-stay listing expiry (iOS `ListingExpirationPolicy`).
     this.expirationDate,
     this.verifiedRealtorExpirationBonusMonths,
     this.latitude,
@@ -101,7 +101,7 @@ class PropertyModel {
   final String? hostUserId;
   /// Creation time — iOS uses `created_at`; Flutter accepts both.
   final DateTime? createdAt;
-  /// Admin/marketing featured flag (see `featuredUntil` for Airbnb-style expiry).
+  /// Admin/marketing featured flag (see `featuredUntil` for short-stay expiry).
   final bool isFeatured;
   final DateTime? featuredUntil;
   /// Listing expiry for search/rules (`expirationDate` / `expiration_date`).
@@ -181,13 +181,13 @@ class PropertyModel {
     return t.isEmpty ? null : t;
   }
 
-  /// True when `propertyType` is airbnb or nested [airbnbInfo] exists — iOS `isAirbnbListing`.
+  /// True when `propertyType` is short-stay or nested [airbnbInfo] exists — iOS `isAirbnbListing`.
   bool get isAirbnbListing {
     final t = propertyType.toLowerCase().trim();
     return t == 'airbnb' || airbnbInfo != null;
   }
 
-  /// True for any listing in the short-stay / Airbnb universe — the
+  /// True for any listing in the short-stay universe — the
   /// authoritative definition used by the dedicated short-stay search
   /// (`AirbnbSearchViewModel`, which queries `listing_type == short_stay`
   /// OR `propertyType == airbnb`). Broader than [isAirbnbListing], which
@@ -196,7 +196,7 @@ class PropertyModel {
   /// short-stay listing saved as `listingType: short_stay` with a plain
   /// `propertyType` and no `airbnbInfo` would otherwise be invisible to
   /// Pulse Finder's short-stay search). Used by
-  /// `PropertyRepository.watchFilteredListings` for the airbnb type filter.
+  /// `PropertyRepository.watchFilteredListings` for the short-stay type filter.
   bool get isShortStayListing {
     final lt = listingType.toLowerCase().replaceAll(RegExp(r'[\s_\-]'), '');
     return isAirbnbListing || lt == 'shortstay' || lt == 'airbnb';
@@ -295,6 +295,8 @@ class PropertyModel {
 
   String get displayPropertyType {
     if (propertyType.isEmpty) return 'Home';
+    // The stored type is 'airbnb'; people see a neutral label.
+    if (propertyType.toLowerCase() == 'airbnb') return 'Short Stay';
     return propertyType[0].toUpperCase() + propertyType.substring(1);
   }
 
@@ -348,11 +350,11 @@ class PropertyModel {
   }
 
   /// Mirrors iOS `property.isListingExpired`:
-  ///   • Airbnb listings never expire on a fixed schedule (same as iOS guard)
+  ///   • short-stay listings never expire on a fixed schedule (same as iOS guard)
   ///   • True when status field is 'expired' / 'archived' / 'deleted', OR
   ///   • expirationDate has passed (Cloud Function may not have updated status yet)
   bool get isExpired {
-    // Airbnb listings never expire — mirrors iOS `guard propertyType != .airbnb`
+    // Short-stay listings never expire — mirrors iOS `guard propertyType != .airbnb`
     if (isAirbnbListing) return false;
 
     final s = status.toLowerCase().trim();

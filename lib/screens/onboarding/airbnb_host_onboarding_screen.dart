@@ -37,7 +37,7 @@ enum _BookingStyle {
   final IconData icon;
 }
 
-/// 5-step guided onboarding for users who choose the Airbnb Host role —
+/// 5-step guided onboarding for users who choose the Short-Stay Host role —
 /// mirrors iOS `AirbnbHostOnboardingView`. State is persisted to Firestore
 /// under `users/{uid}.airbnbOnboarding` as each step completes, same as iOS.
 class AirbnbHostOnboardingScreen extends StatefulWidget {

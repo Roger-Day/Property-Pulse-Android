@@ -55,7 +55,7 @@ enum _WizardStep {
 // ─── Main wizard screen ───────────────────────────────────────────────────────
 
 /// Mirrors iOS `AirbnbListingWizardView` — 11-step wizard for creating
-/// a short-stay (Airbnb-style) listing.
+/// a short-stay listing.
 class AirbnbListingWizardScreen extends StatefulWidget {
   const AirbnbListingWizardScreen({super.key});
 
@@ -384,7 +384,7 @@ class _AirbnbListingWizardScreenState
           LinearProgressIndicator(
             value: progress,
             backgroundColor: Colors.grey.shade200,
-            valueColor: const AlwaysStoppedAnimation(Color(0xFFFF5A5F)),
+            valueColor: const AlwaysStoppedAnimation(Color(0xFF0F766E)),
             minHeight: 3,
           ),
           Padding(
@@ -433,7 +433,7 @@ class _AirbnbListingWizardScreenState
               child: FilledButton(
                 onPressed: (_canProceed && !_publishing) ? _advance : null,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFFF5A5F),
+                  backgroundColor: const Color(0xFF0F766E),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 child: _publishing
@@ -629,12 +629,12 @@ class _SelectionCard extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: isSelected
-              ? const Color(0xFFFF5A5F).withOpacity(0.06)
+              ? const Color(0xFF0F766E).withOpacity(0.06)
               : Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isSelected
-                ? const Color(0xFFFF5A5F)
+                ? const Color(0xFF0F766E)
                 : AppColors.border,
             width: isSelected ? 2 : 1,
           ),
@@ -643,7 +643,7 @@ class _SelectionCard extends StatelessWidget {
           children: [
             Icon(icon,
                 color: isSelected
-                    ? const Color(0xFFFF5A5F)
+                    ? const Color(0xFF0F766E)
                     : AppColors.textSecondary,
                 size: 28),
             const SizedBox(width: 14),
@@ -663,7 +663,7 @@ class _SelectionCard extends StatelessWidget {
             ),
             if (isSelected)
               const Icon(Icons.check_circle,
-                  color: Color(0xFFFF5A5F)),
+                  color: Color(0xFF0F766E)),
           ],
         ),
       ),
@@ -942,11 +942,11 @@ class _AmenitiesStep extends StatelessWidget {
               selected: picked,
               onSelected: (_) => onToggle(a),
               selectedColor:
-                  const Color(0xFFFF5A5F).withOpacity(0.15),
-              checkmarkColor: const Color(0xFFFF5A5F),
+                  const Color(0xFF0F766E).withOpacity(0.15),
+              checkmarkColor: const Color(0xFF0F766E),
               labelStyle: TextStyle(
                 color: picked
-                    ? const Color(0xFFFF5A5F)
+                    ? const Color(0xFF0F766E)
                     : AppColors.textPrimary,
               ),
             );
@@ -1355,7 +1355,7 @@ class _HouseRulesStep extends StatelessWidget {
             title: Text(r),
             value: selected.contains(r),
             onChanged: (_) => onToggle(r),
-            activeColor: const Color(0xFFFF5A5F),
+            activeColor: const Color(0xFF0F766E),
           ),
         ),
         const SizedBox(height: 12),
@@ -1409,7 +1409,7 @@ class _BookingSettingsStep extends StatelessWidget {
           ),
           value: instantBook,
           onChanged: onInstantChanged,
-          activeColor: const Color(0xFFFF5A5F),
+          activeColor: const Color(0xFF0F766E),
         ),
         const SizedBox(height: 20),
         const Text('Cancellation Policy',
@@ -1477,7 +1477,7 @@ class _SuccessScreen extends StatelessWidget {
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(Icons.check,
-                    size: 52, color: Color(0xFFFF5A5F)),
+                    size: 52, color: Color(0xFF0F766E)),
               ),
               const SizedBox(height: 24),
               const Text(
@@ -1499,7 +1499,7 @@ class _SuccessScreen extends StatelessWidget {
                 icon: const Icon(Icons.visibility),
                 label: const Text('View My Listing'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFFF5A5F),
+                  backgroundColor: const Color(0xFF0F766E),
                   minimumSize: const Size.fromHeight(52),
                 ),
               ),

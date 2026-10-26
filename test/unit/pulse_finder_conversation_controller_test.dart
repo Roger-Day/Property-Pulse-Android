@@ -1087,7 +1087,7 @@ void main() {
     /// the search" / "I am opening our database" while no search ever ran,
     /// because the model's own `intent` field is nullable/not required and
     /// came back null even though the user's first message unambiguously
-    /// said "Looking for a Airbnb...". Without a deterministic backstop,
+    /// said "Looking for a short-stay...". Without a deterministic backstop,
     /// `profile.intent` stays null forever and `_executeSearch`'s
     /// `profile.intentLocked` gate silently blocks every future search.
     test('establishes intent via keyword fallback when the AI omits it on the first turn', () async {

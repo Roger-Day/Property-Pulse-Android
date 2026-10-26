@@ -55,9 +55,9 @@ class PermissionBlocked extends PermissionResult {
 class ListingPermissionService {
   /// Per-role capability matrix — mirrors iOS `UserRole.defaultCapabilities`.
   ///
-  /// Realtor    → general + airbnb (both fully allowed, no warning)
-  /// Owner      → general + airbnb
-  /// AirbnbHost → airbnb (primary) + general (fully allowed)
+  /// Realtor    → general + short-stay (both fully allowed, no warning)
+  /// Owner      → general + short-stay
+  /// AirbnbHost → short-stay (primary) + general (fully allowed)
   /// Developer  → development only
   /// Admin      → all three
   /// Seeker     → none (blocked)
@@ -94,7 +94,7 @@ class ListingPermissionService {
         if (r == 'developer') {
           return const PermissionBlocked(
             reason:
-                'Short-stay listings require a different role. Switch to Airbnb Host, Realtor, or Owner.',
+                'Short-stay listings require a different role. Switch to Short-Stay Host, Realtor, or Owner.',
           );
         }
         // Realtor, Owner, AirbnbHost → fully allowed

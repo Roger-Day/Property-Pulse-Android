@@ -4981,7 +4981,7 @@ class _PropertyDetailFloatingButtons extends StatelessWidget {
             if (onBook != null) ...[
               _FloatingCircleButton(
                 icon: Icons.credit_card,
-                color: const Color(0xFFFF5A5F), // Airbnb rose
+                color: const Color(0xFF0F766E), // Airbnb rose
                 tooltip: 'Book',
                 onTap: onBook!,
               ),

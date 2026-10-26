@@ -77,8 +77,8 @@ class AppColors {
   static const Color gray5 = Color(0xFFE5E5EA);
   static const Color gray6 = Color(0xFFF2F2F7);
 
-  // ── Property type colours ─────────────────────────────────────────────────
-  static const Color typeAirbnb = Color(0xFFFF5A5F);
+  // ── Property type colours (short-stay accent: teal, the app's own) ──────
+  static const Color typeAirbnb = Color(0xFF0F766E);
 
   // ── Skeleton / shimmer ────────────────────────────────────────────────────
   static const Color skeletonBase      = Color(0xFFE5E5EA); // systemGray5

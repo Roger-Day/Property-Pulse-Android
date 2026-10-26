@@ -410,8 +410,8 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
       if (newPt == 'airbnb') {
         updates['expirationDate'] = FieldValue.delete();
       } else {
-        // `airbnbInfo` is only written while the type is airbnb — a listing
-        // switched away from airbnb kept the stale map, and any non-null
+        // `airbnbInfo` is only written while the type is short-stay — a listing
+        // switched away from short-stay kept the stale map, and any non-null
         // airbnbInfo makes PropertyModel treat it as a short-stay that never
         // expires.
         if (_property?.airbnbInfo != null) {
@@ -854,7 +854,7 @@ class _EditPropertyScreenState extends State<EditPropertyScreen> {
                 const SizedBox(height: 14),
                 if (_isAirbnb)
                   _FormSectionCard(
-                    title: 'Airbnb Information',
+                    title: 'Short-Stay Information',
                     child: Column(
                       children: [
                         ListingFormField(

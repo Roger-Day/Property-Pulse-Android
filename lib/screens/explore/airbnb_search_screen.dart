@@ -356,7 +356,7 @@ class _AirbnbSearchScreenState extends State<AirbnbSearchScreen> {
                   child: FilledButton(
                     onPressed: _search,
                     style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFFFF5A5F), // Airbnb rose
+                      backgroundColor: const Color(0xFF0F766E), // Airbnb rose
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Text(

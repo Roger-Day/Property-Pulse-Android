@@ -3,7 +3,7 @@ import '../models/project_model.dart';
 
 /// Mirrors iOS `DevelopmentTeamViewModel.effectiveRole`.
 ///
-/// Only a Developer account owns a development. A Realtor, Property Owner, Seeker or Airbnb Host
+/// Only a Developer account owns a development. A Realtor, Property Owner, Seeker or Short-Stay Host
 /// account named as the owner gets no owner powers - not through the owner's own team record or
 /// roles entry either - while people the developer invited keep the access their invitation gave
 /// them. [isDeveloperAccount] is true for a Developer (or admin) account.

@@ -5,7 +5,7 @@ import 'package:property_pulse/models/user_profile_doc.dart';
 import 'package:property_pulse/utils/effective_development_role.dart';
 
 /// Who counts as a development's owner. Only a Developer account does; being named as the owner is
-/// not enough for a Realtor, Property Owner, Seeker or Airbnb Host account. People the developer
+/// not enough for a Realtor, Property Owner, Seeker or Short-Stay Host account. People the developer
 /// invited keep the team access their invitation gave them. (The security rules enforce the same
 /// thing on the server.)
 ProjectModel _project({Map<String, String> roles = const {}}) => ProjectModel(

@@ -34,7 +34,7 @@ const propertyTypeLabels = [
   'Land',
   'Commercial',
   'Industrial',
-  'Airbnb',
+  'Short Stay',
 ];
 
 const statuses = ['available', 'pending', 'sold', 'rented', 'expired', 'archived'];

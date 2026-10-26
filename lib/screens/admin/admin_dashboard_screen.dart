@@ -23,6 +23,7 @@ import 'admin_analytics_tab.dart';
 import 'admin_moderation_detail_sheet.dart';
 import 'admin_settings_tab.dart';
 import 'admin_user_detail_screen.dart';
+import '../../utils/role_label.dart';
 
 /// Tabbed admin shell — layout aligned with iOS `AdminDashboardView`:
 /// welcome header, stat cards, horizontal pill tabs, rich Overview.
@@ -1995,7 +1996,7 @@ class _ApplicationDetailSheetState extends State<_ApplicationDetailSheet> {
                       ],
                       if (role.isNotEmpty) ...[
                         const SizedBox(height: 4),
-                        Text('Current Role: $role',
+                        Text('Current Role: ${roleUiLabel(role)}',
                             style: Theme.of(context)
                                 .textTheme
                                 .bodySmall
@@ -4576,7 +4577,7 @@ class _UsersTabState extends State<_UsersTab> {
               for (final role in _roleChips) ...[
                 const SizedBox(width: 8),
                 FilterChip(
-                  label: Text(role),
+                  label: Text(roleUiLabel(role)),
                   selected: _roleFilter == role,
                   onSelected: (_) => setState(() => _roleFilter = role),
                 ),
@@ -4628,7 +4629,7 @@ class _UsersTabState extends State<_UsersTab> {
                     final role = r['role'] as String? ?? '—';
                     return ListTile(
                       title: Text(name),
-                      subtitle: Text('$email\nRole: $role', maxLines: 3),
+                      subtitle: Text('$email\nRole: ${roleUiLabel(role)}', maxLines: 3),
                       trailing: IconButton(
                         icon: const Icon(Icons.edit_outlined),
                         tooltip: 'Quick edit role',

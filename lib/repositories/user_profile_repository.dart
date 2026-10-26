@@ -59,7 +59,7 @@ class UserProfileStats {
   final int developmentsCount;
   final int staysCount;
   final int listingsCount;
-  /// True when at least one of the user's listings is a short-stay/Airbnb
+  /// True when at least one of the user's listings is a short-stay
   /// listing — mirrors iOS `MainTabView.canAccessHostTab`'s
   /// `managedAirbnbListings` check, which gates Host Dashboard visibility
   /// for realtor/owner/admin roles (airbnbHost always has access).
@@ -547,7 +547,7 @@ class UserProfileRepository {
     required String userId,
     required String role, // 'seeker' | 'owner' | 'realtor' | 'developer' | 'airbnbHost'
   }) async {
-    // The entitlements enum has no dedicated Airbnb-host tier — mirrors
+    // The entitlements enum has no dedicated short-stay-host tier — mirrors
     // iOS's "nearest equivalent with listing capability" fallback to owner.
     final entitlementsType = role == 'airbnbHost'
         ? ListingUserType.owner

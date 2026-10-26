@@ -20,8 +20,8 @@ class PulseFinderPromptCards extends StatelessWidget {
     ),
     (
       icon: Icons.house_siding_outlined,
-      label: 'Help me find an Airbnb',
-      prompt: 'Help me find a good Airbnb property',
+      label: 'Help me find a short stay',
+      prompt: 'Help me find a good short-stay property',
     ),
     (
       icon: Icons.trending_up,

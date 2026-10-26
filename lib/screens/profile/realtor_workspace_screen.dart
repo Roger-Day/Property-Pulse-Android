@@ -5,7 +5,7 @@ import 'host_dashboard_screen.dart';
 import 'my_listings_screen.dart';
 
 /// Combined workspace for realtors, property owners, and admins who have at
-/// least one managed short-stay (Airbnb) listing — mirrors iOS
+/// least one managed short-stay listing — mirrors iOS
 /// `RealtorWorkspaceView`. Shown in the bottom nav's middle "Manage" slot
 /// once [HomeShell] determines the signed-in user qualifies (see
 /// `home_shell.dart`'s `_hasManagedShortStayListing` check); everyone else

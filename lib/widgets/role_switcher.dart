@@ -43,7 +43,7 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
       _showAlert(
         title: 'Role Unavailable',
         message:
-            'You cannot return to the ${RoleSwitchService.displayName(role)} role after switching away.',
+            'You cannot return to the ${RoleSwitchService.uiLabel(role)} role after switching away.',
       );
       return;
     }
@@ -89,7 +89,7 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'Role changed to ${RoleSwitchService.displayName(role)}'),
+              'Role changed to ${RoleSwitchService.uiLabel(role)}'),
         ),
       );
     }
@@ -121,7 +121,7 @@ class _RoleSwitcherState extends State<RoleSwitcher> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-                'Switch from ${RoleSwitchService.displayName(_currentRole)} to ${RoleSwitchService.displayName(newRole)}?'),
+                'Switch from ${RoleSwitchService.uiLabel(_currentRole)} to ${RoleSwitchService.uiLabel(newRole)}?'),
             const SizedBox(height: 8),
             Text(
               'You can switch roles again in ${RoleSwitchService.cooldownDays} days after this change.',
@@ -268,7 +268,7 @@ class _RoleChip extends StatelessWidget {
       case 'developer':
         return Colors.indigo;
       case 'airbnbHost':
-        return const Color(0xFFFF5A5F);
+        return const Color(0xFF0F766E);
       default:
         return AppColors.primary;
     }
@@ -310,7 +310,7 @@ class _RoleChip extends StatelessWidget {
             const SizedBox(width: 6),
             Expanded(
               child: Text(
-                RoleSwitchService.displayName(role),
+                RoleSwitchService.uiLabel(role),
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: isCurrent

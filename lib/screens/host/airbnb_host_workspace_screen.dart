@@ -6,7 +6,7 @@ import 'host_calendar_screen.dart';
 import 'host_earnings_screen.dart';
 import 'host_reservations_screen.dart';
 
-/// Mirrors iOS `AirbnbHostWorkspaceView` — central hub for Airbnb host tools.
+/// Mirrors iOS `AirbnbHostWorkspaceView` — central hub for short-stay host tools.
 class AirbnbHostWorkspaceScreen extends StatelessWidget {
   const AirbnbHostWorkspaceScreen({super.key, required this.hostId});
 
@@ -108,7 +108,7 @@ class _HostWorkspaceHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Airbnb Host',
+                  'Short-Stay Host',
                   style: TextStyle(
                       color: Colors.white,
                       fontSize: 18,

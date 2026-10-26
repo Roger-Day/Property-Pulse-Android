@@ -123,7 +123,7 @@ void main() {
       test('listing_type short_stay is short-stay even with a plain propertyType', () {
         // Regression: this is the case isAirbnbListing missed — a real
         // short-stay listing saved under the listingType convention with a
-        // non-airbnb propertyType and no airbnbInfo. It must still be found
+        // non-short-stay propertyType and no airbnbInfo. It must still be found
         // by Pulse Finder's short-stay search.
         expect(
           _make(listingType: 'short_stay', propertyType: 'apartment').isShortStayListing,

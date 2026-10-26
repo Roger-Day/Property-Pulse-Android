@@ -29,7 +29,7 @@ import '../../widgets/ai_listing_suggestion_sheet.dart';
 import 'listing_form_widgets.dart';
 
 /// Android parity with iOS `AddPropertyView`: section order, quotas, Stripe nudge,
-/// development link, typed property sections, Airbnb payload, upload-then-save,
+/// development link, typed property sections, short-stay payload, upload-then-save,
 /// blocking loading overlay, and success / error dialogs.
 class AddPropertyScreen extends StatefulWidget {
   const AddPropertyScreen({super.key, required this.userId});
@@ -1089,7 +1089,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
                     const SizedBox(height: 14),
                     if (_isAirbnb) ...[
                       _AddFormSectionCard(
-                        title: 'Airbnb pricing',
+                        title: 'Short-stay pricing',
                         child: Column(
                           children: [
                             ListingFormField(
@@ -1212,7 +1212,7 @@ class _AddPropertyScreenState extends State<AddPropertyScreen> {
                       ),
                       const SizedBox(height: 14),
                     ],
-                    // Amenities only shown for Airbnb type (inside _isAirbnb block above) — matches iOS
+                    // Amenities only shown for short-stay type (inside _isAirbnb block above) — matches iOS
                     _AddFormSectionCard(
                       title: 'Boosted listings',
                       child: Column(

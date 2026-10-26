@@ -142,7 +142,7 @@ class UserProfileDoc {
   }
 
   /// A Developer account (or an admin). Only these own a development: being named as a project's
-  /// owner is not enough for a Realtor, Property Owner, Seeker or Airbnb Host account.
+  /// owner is not enough for a Realtor, Property Owner, Seeker or Short-Stay Host account.
   static bool isDeveloperAccountRole(String? role) {
     final r = role?.toLowerCase().trim() ?? '';
     return r == 'developer' || r == 'admin';

@@ -35,9 +35,9 @@ enum SubscriptionPlansContext {
       case SubscriptionPlansContext.developer:
         return 'Upgrade to publish more development projects';
       case SubscriptionPlansContext.airbnbHost:
-        return 'Upgrade to list more properties alongside your Airbnb rentals';
+        return 'Upgrade to list more properties alongside your short-stay rentals';
       case SubscriptionPlansContext.owner:
-        return 'Upgrade to list more properties and Airbnb rentals';
+        return 'Upgrade to list more properties and short-stay rentals';
       case SubscriptionPlansContext.realtor:
         return 'Upgrade to grow your listing portfolio';
     }
@@ -81,7 +81,7 @@ enum SubscriptionPlansContext {
 
   /// Real store product ids and live/coming-soon status match iOS exactly
   /// (`SubscriptionPlansView` — only General, Developer Pro, Realtor Pro,
-  /// and Airbnb Host Pro have App Store Connect / Play Console products
+  /// and Short-Stay Host Pro have App Store Connect / Play Console products
   /// configured today; the rest are intentionally `comingSoon`, same as iOS).
   List<_PlanOption> get plans {
     switch (this) {
@@ -145,7 +145,7 @@ enum SubscriptionPlansContext {
             price: '\$9.99/mo',
             realProductId: InAppBillingService.airbnbHostProMonthlyId,
             features: [
-              'Unlimited Airbnb listings',
+              'Unlimited short-stay listings',
               'Up to 5 general listings',
               'Smart pricing suggestions',
               'Guest messaging templates',
@@ -159,7 +159,7 @@ enum SubscriptionPlansContext {
             badge: 'Coming Soon',
             comingSoon: true,
             features: [
-              'Unlimited Airbnb listings',
+              'Unlimited short-stay listings',
               'Up to 15 general listings',
               'Channel manager integration',
               'Dynamic pricing tools',
@@ -177,7 +177,7 @@ enum SubscriptionPlansContext {
             comingSoon: true,
             features: [
               'Up to 3 general listings',
-              'Up to 2 Airbnb listings',
+              'Up to 2 short-stay listings',
               'Advanced analytics',
               'Featured listing eligibility',
               'Priority inbox',
@@ -191,7 +191,7 @@ enum SubscriptionPlansContext {
             comingSoon: true,
             features: [
               'Up to 10 general listings',
-              'Up to 10 Airbnb listings',
+              'Up to 10 short-stay listings',
               'Portfolio analytics',
               'Market value estimates',
               'All Pro features',
@@ -207,7 +207,7 @@ enum SubscriptionPlansContext {
             badge: 'Recommended',
             features: [
               'Up to 50 regular listings',
-              'Up to 5 Airbnb listings',
+              'Up to 5 short-stay listings',
               'Advanced analytics',
               'Lead management tools',
               '1.5× feed ranking boost',
@@ -221,7 +221,7 @@ enum SubscriptionPlansContext {
             comingSoon: true,
             features: [
               '200+ listings',
-              'Up to 25 Airbnb listings',
+              'Up to 25 short-stay listings',
               '2.5× feed ranking boost',
               'Brokerage-ready architecture',
               'All Pro features',
@@ -631,7 +631,7 @@ class ListingLimitReachedModal extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            isAirbnb ? 'Airbnb Listing Limit' : 'Listing Limit Reached',
+            isAirbnb ? 'Short-Stay Listing Limit' : 'Listing Limit Reached',
             style: const TextStyle(
                 fontSize: 18, fontWeight: FontWeight.bold),
           ),

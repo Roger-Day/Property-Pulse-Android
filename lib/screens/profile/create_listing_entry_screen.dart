@@ -299,7 +299,7 @@ class _CategoryCard extends StatelessWidget {
       case ListingCategory.development:
         return Colors.indigo;
       case ListingCategory.airbnb:
-        return const Color(0xFFFF5A5F);
+        return const Color(0xFF0F766E);
     }
   }
 

@@ -1,5 +1,5 @@
 // Unit tests for ListingExpirationPolicy.
-// iOS parity: ListingExpirationPolicy.swift — 30-day rent, 365-day sale, no expiry Airbnb.
+// iOS parity: ListingExpirationPolicy.swift — 30-day rent, 365-day sale, no expiry short-stay.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:property_pulse/utils/listing_expiration_policy.dart';
 

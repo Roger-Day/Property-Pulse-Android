@@ -16,7 +16,7 @@ enum RealtorGatedFeature {
       case RealtorGatedFeature.regularListingLimit:
         return 'Listing Limit Reached';
       case RealtorGatedFeature.airbnbListingLimit:
-        return 'Airbnb Listing Limit Reached';
+        return 'Short-Stay Listing Limit Reached';
       case RealtorGatedFeature.advancedAnalytics:
         return 'Unlock Advanced Analytics';
       case RealtorGatedFeature.leadManagement:
@@ -33,7 +33,7 @@ enum RealtorGatedFeature {
       case RealtorGatedFeature.regularListingLimit:
         return "You've reached your listing limit on Realtor Free.";
       case RealtorGatedFeature.airbnbListingLimit:
-        return "You've reached your Airbnb listing limit on Realtor Free.";
+        return "You've reached your short-stay listing limit on Realtor Free.";
       case RealtorGatedFeature.advancedAnalytics:
         return 'Realtor Free includes basic metrics only.';
       case RealtorGatedFeature.leadManagement:
@@ -85,7 +85,7 @@ enum RealtorGatedFeature {
       case RealtorGatedFeature.airbnbListingLimit:
         return [
           'Up to 50 regular listings',
-          'Up to 5 Airbnb listings',
+          'Up to 5 short-stay listings',
           'Advanced analytics',
           'Lead management tools',
           'Enhanced feed visibility',
@@ -126,7 +126,7 @@ enum RealtorGatedFeature {
         'Everything in Pro',
         '2.5× feed ranking weight',
         '200+ listings',
-        'Up to 25 Airbnb listings',
+        'Up to 25 short-stay listings',
         'Brokerage-ready architecture',
       ];
 }

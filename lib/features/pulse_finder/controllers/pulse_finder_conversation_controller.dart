@@ -563,7 +563,7 @@ class PulseFinderConversationController extends ChangeNotifier {
       // The model's own `intent` is nullable and not required in the
       // schema — it can (and in practice sometimes does) come back null
       // even on a turn that clearly states an intent ("Looking for a
-      // Airbnb..."). Without a backstop, an unlocked profile stays
+      // Short-stay..."). Without a backstop, an unlocked profile stays
       // unlocked forever: _resolveIntent/PulseFinderIntentLock.resolve
       // just echoes a null proposal back as null, so `intentLocked` never
       // becomes true and _executeSearch's `profile.intentLocked` gate
