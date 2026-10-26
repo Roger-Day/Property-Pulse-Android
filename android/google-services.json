@@ -14,11 +14,11 @@
       },
       "oauth_client": [
         {
-          "client_id": "1024386037978-vedd56uhb3csui8mv2d9o16oc3j52fvk.apps.googleusercontent.com",
+          "client_id": "1024386037978-t76jfssaouj3jn2t6va9gl1ljhp3qo14.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.propertypulse",
-            "certificate_hash": "c01847cb1765ceafb0e22b2e10d4ae5dbae5ede1"
+            "certificate_hash": "2a1e47d6a24f99abdb35eab71f42d7d653d75e73"
           }
         },
         {
