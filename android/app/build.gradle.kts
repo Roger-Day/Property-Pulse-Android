@@ -17,6 +17,16 @@ val keystoreProperties = Properties().apply {
     }
 }
 
+// ── Google Maps key: android/local.properties (git-ignored) or the MAPS_API_KEY env var ──────
+val localProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val mapsApiKey: String = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
+if (mapsApiKey.isEmpty()) {
+    logger.warn("MAPS_API_KEY is not set (android/local.properties or env): maps will be blank in this build.")
+}
+
 android {
     namespace = "com.propertypulse"
     compileSdk = flutter.compileSdkVersion
@@ -42,6 +52,9 @@ android {
 
         // Required for Firestore on older API levels
         multiDexEnabled = true
+
+        // Read by the Google Maps meta-data in AndroidManifest.xml
+        manifestPlaceholders["mapsApiKey"] = mapsApiKey
     }
 
     // ── Signing ──────────────────────────────────────────────────────────────
